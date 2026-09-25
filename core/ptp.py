@@ -2,15 +2,32 @@
 core/ptp.py
 PTP detection and inventory management.
 
-Triggers for PTP INVENTORY:
+Triggers for PTP INVENTORY consideration:
 1. DRR action_code contains "PTP"
 2. Field file has real PTP AMOUNT + PTP DATE (non-placeholder)
-3. DRR remark or action_code contains "KEPT" or "REPO"
+3. DRR remark or action_code contains "KEPT"
+4. DRR remark contains "REPO" together with an actual outcome word
+   (recovered / surrender / repossess) — see FIXED note below.
 
 Partitions:
 - followup_ptps: account already in PTP INVENTORY — auto-applied, informational only
 - new_ptps: account in book, not in PTP INVENTORY — needs user confirmation
 - out_of_book_ptps: account NOT in current book — report only, never add
+
+FIXED (this revision):
+- The old REPO trigger was a bare `"REPO"` substring match, which fires
+  on the routine `SRC REPO AI` source tag that appears on huge numbers
+  of completely ordinary remarks (that tag just identifies where the
+  entry came from, not that anything PTP-worthy happened). That made
+  nearly every REPO-AI-sourced entry show up as a "new PTP candidate"
+  needing a manual Skip/Add decision every single run. Tightened to
+  require REPO alongside an actual outcome word (recovered, surrender,
+  repossess, willing to surrender, etc.) — same standard used when these
+  were reviewed by hand.
+- PN is normalized and kept as a STRING everywhere, including in
+  build_ptp_inventory_row (previously did `int(pn) if pn.isdigit() else
+  pn` — unnecessary and risky given these are 12-15+ digit account
+  numbers, right at the edge of safe float/int round-tripping).
 """
 from __future__ import annotations
 
@@ -20,9 +37,26 @@ from typing import Optional
 
 import pandas as pd
 
-# Keywords that trigger PTP INVENTORY consideration
-_PTP_KEYWORDS = re.compile(r"PTP|KEPT|REPO", re.IGNORECASE)
-_PTP_STATUS_RE = re.compile(r"PTP", re.IGNORECASE)
+# PTP / KEPT are always meaningful on their own.
+_PTP_OR_KEPT_RE = re.compile(r"PTP|KEPT", re.IGNORECASE)
+
+# REPO only counts as a PTP-worthy trigger when paired with an outcome
+# word — a bare "SRC REPO AI" tag on an ordinary remark should NOT fire.
+_REPO_OUTCOME_RE = re.compile(
+    r"REPO.{0,60}(RECOVERED|SURRENDER|REPOSSESS|WILLING)|"
+    r"(RECOVERED|SURRENDER|REPOSSESS|WILLING).{0,60}REPO",
+    re.IGNORECASE,
+)
+
+
+def _has_ptp_trigger(text: str) -> bool:
+    if not text:
+        return False
+    if _PTP_OR_KEPT_RE.search(text):
+        return True
+    if _REPO_OUTCOME_RE.search(text):
+        return True
+    return False
 
 
 @dataclass
@@ -53,26 +87,24 @@ def detect_ptp_activity(
     daily_df: pd.DataFrame,
 ) -> PTPResult:
     """
-    Scan DRR and field file for PTP/KEPT/REPO activity.
+    Scan DRR and field file for PTP/KEPT/REPO(+outcome) activity.
     Partitions candidates into followup, new, and out-of-book groups.
     """
     result = PTPResult()
 
-    # Build existing PTP INVENTORY set by PN
     existing_ptp_pns: set[str] = set()
     for _, row in ptp_inventory_df.iterrows():
         pn = _norm(row.get("PN", ""))
         if pn:
             existing_ptp_pns.add(pn)
 
-    # Name lookup from DAILY
     pn_to_name = {}
     for _, row in daily_df.iterrows():
         pn = _norm(row.get("PN", ""))
         if pn:
             pn_to_name[pn] = str(row.get("NAME", "")).strip()
 
-    seen: set[str] = set()  # (pn, source) dedup
+    seen: set[tuple[str, str]] = set()
 
     # --- Scan DRR ---
     if drr_df is not None and not drr_df.empty:
@@ -85,7 +117,7 @@ def detect_ptp_activity(
             remark = str(row.get("remark", "")).strip()
             combined = action_code + " " + remark
 
-            if not _PTP_KEYWORDS.search(combined):
+            if not _has_ptp_trigger(combined):
                 continue
 
             key = (pn, "DRR")
@@ -121,9 +153,8 @@ def detect_ptp_activity(
                 (ptp_date is not None and not pd.isna(ptp_date))
             )
 
-            # Also check FV REMARK for keywords
             fv_remark = str(row.get("FV REMARK", "")).strip()
-            has_keyword = _PTP_KEYWORDS.search(fv_remark)
+            has_keyword = _has_ptp_trigger(fv_remark)
 
             if not has_real_ptp and not has_keyword:
                 continue
@@ -173,13 +204,11 @@ def build_ptp_inventory_row(
     """
     Build a PTP INVENTORY row for a new PTP candidate.
     Copies fields from the DAILY row; fills in PTP-specific data.
+    PN is kept as a plain string throughout — never cast to int.
     """
     daily_row = daily_df[daily_df["PN"].astype(str).str.strip() == pn]
     if daily_row.empty:
-        # Try normalized PN
-        daily_row = daily_df[
-            daily_df["PN"].apply(lambda x: _norm(x)) == pn
-        ]
+        daily_row = daily_df[daily_df["PN"].apply(lambda x: _norm(x)) == pn]
 
     if daily_row.empty:
         base = {}
@@ -189,7 +218,7 @@ def build_ptp_inventory_row(
     return {
         "DATE": report_date.strftime("%m/%d/%Y"),
         "PRODUCT": base.get("PRODUCT", "01 AL - AUTO LOAN"),
-        "PN": int(pn) if pn.isdigit() else pn,
+        "PN": pn,
         "NAME": base.get("NAME", candidate.name),
         "OB": base.get("OB"),
         "DPD": base.get("DPD"),
@@ -201,7 +230,7 @@ def build_ptp_inventory_row(
         "STATUS REMARKS": candidate.remark,
         "FV REMARKS": base.get("FV REMARKS", "AWAITING FIELD STATUS"),
         "CLIENT STATUS": base.get("CLIENT STATUS"),
-        "ADDRESS STATUS": base.get("ADDRESS STATUS", "FFV"),
+        "ADDRESS STATUS": base.get("ADDRESS STATUS", "(FOR FIELD VISIT)"),
         "UNIT STATUS": base.get("UNIT STATUS"),
         "PULLED_OUT TAG": base.get("PULLED_OUT TAG", "EXISTING"),
         "PULLED_OUT DATE": base.get("PULLED_OUT DATE"),
