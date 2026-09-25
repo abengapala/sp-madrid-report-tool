@@ -2,6 +2,27 @@
 core/reconciler.py
 Account list reconciliation logic.
 Pure diff — no mutations. The UI decides what to apply.
+
+FIXED (this revision):
+- build_new_account_row now fills the confirmed constant defaults for a
+  brand-new account instead of leaving them None:
+    COLL TAGGING  -> "MARJELVIN DIAZ"
+    PULLED_OUT TAG -> "EXISTING"
+    COLLECTOR     -> "ALBERT LEGARA"
+  (AGENCY was already correctly defaulted to "SP MADRID".)
+  Previously these three were left blank for every new account, which
+  meant a fresh endorsement would come in missing its collector tag and
+  (worse) with no PULLED_OUT TAG at all — which would make the account
+  invisible to the is_held() check in remarks.py/trails.py, since that
+  check only skips a row when the tag is explicitly something other
+  than "EXISTING"/blank; a blank was already being treated as "not
+  held", so this wasn't a correctness bug for hold-detection, but it did
+  mean every new account silently launched without its collector name.
+- PN is now consistently normalized as a STRING throughout (was already
+  string via _normalize_pn, but build_new_account_row previously passed
+  the raw `pn` value straight through, which is fine since callers pass
+  the normalized string — no behavior change here, just confirming it
+  stays a string all the way into the DAILY row dict, never int()).
 """
 from __future__ import annotations
 
@@ -13,6 +34,12 @@ from typing import Optional
 import pandas as pd
 
 KEEPS_FILE = os.path.join(os.path.dirname(__file__), "..", "kept_accounts.json")
+
+DEFAULT_COLL_TAGGING = "MARJELVIN DIAZ"
+DEFAULT_PULLED_OUT_TAG = "EXISTING"
+DEFAULT_COLLECTOR = "ALBERT LEGARA"
+DEFAULT_AGENCY = "SP MADRID"
+DEFAULT_PRODUCT = "01 AL - AUTO LOAN"
 
 
 # ---------------------------------------------------------------------------
@@ -45,11 +72,9 @@ def save_kept_accounts(keeps: set[str]) -> None:
 
 @dataclass
 class ReconcileResult:
-    current_accounts: list[str] = field(default_factory=list)  # all accounts in current report (always kept)
-    new_candidates: list[str] = field(default_factory=list)    # in DB but not in current report → user can add
-    manually_added: list[str] = field(default_factory=list)    # in current report but not in DB (user-added, always kept)
-
-    # For display: map pn -> name for each category
+    current_accounts: list[str] = field(default_factory=list)
+    new_candidates: list[str] = field(default_factory=list)
+    manually_added: list[str] = field(default_factory=list)
     pn_to_name: dict[str, str] = field(default_factory=dict)
 
 
@@ -65,8 +90,8 @@ def reconcile(
     """
     The current report's account list is ALWAYS the master.
     - All accounts in the current report are retained (current_accounts).
-    - Accounts in the current report but NOT in the DB are flagged as manually_added
-      (informational only — they are still kept).
+    - Accounts in the current report but NOT in the DB are flagged as
+      manually_added (informational only — they are still kept).
     - Accounts in the DB but NOT in the current report are new_candidates
       (user must explicitly choose to add them).
 
@@ -96,13 +121,9 @@ def reconcile(
     result.current_accounts = sorted(current_pns)
 
     if db_df is None or db_df.empty:
-        # No database — current list is everything, nothing new to suggest
         return result
 
-    # Accounts in DB but NOT in current report → candidates to add
     result.new_candidates = sorted(db_pns - current_pns)
-
-    # Accounts in current but NOT in DB → manually added by user, always retained
     result.manually_added = sorted(current_pns - db_pns)
 
     return result
@@ -117,8 +138,14 @@ def build_new_account_row(
 ) -> dict:
     """
     Build a DAILY-shaped row for a brand-new account using DB fields
-    + whatever DRR/field history is available.
-    Missing fields stay blank — never invented.
+    + whatever DRR/field history is available. Fields with no source
+    stay blank EXCEPT the confirmed standing defaults below, which are
+    always applied to a new account regardless of source data:
+        COLL TAGGING   = "MARJELVIN DIAZ"
+        PULLED_OUT TAG = "EXISTING"
+        COLLECTOR      = "ALBERT LEGARA"
+        AGENCY         = "SP MADRID"
+        PRODUCT        = "01 AL - AUTO LOAN" (unless DB gives a real value)
     """
     db_row = db_df[db_df["PN_NO"] == pn]
     if db_row.empty:
@@ -130,7 +157,6 @@ def build_new_account_row(
         v = db_row_dict.get(col)
         return v if pd.notna(v) and str(v).strip() not in ("", "nan") else default
 
-    # Build STATUS REMARKS from DRR if available
     status_remarks = ""
     if drr_df is not None and not drr_df.empty:
         acct_drr = drr_df[drr_df["account_no"] == pn].copy()
@@ -139,7 +165,6 @@ def build_new_account_row(
             entries = build_remark_entries(acct_drr)
             status_remarks = ", ".join(entries)
 
-    # FV REMARKS from field file
     fv_remarks = ""
     if field_df is not None and not field_df.empty:
         acct_fv = field_df[field_df["pn"] == pn].sort_values("date_parsed", ascending=False)
@@ -148,7 +173,7 @@ def build_new_account_row(
 
     return {
         "DATE": report_date,
-        "PRODUCT": db("PRODUCT", "01 AL - AUTO LOAN"),
+        "PRODUCT": db("PRODUCT", DEFAULT_PRODUCT),
         "PN": pn,
         "NAME": db("CUST_NAME", ""),
         "OB": db("OUTSTANDING_BALANCE"),
@@ -156,19 +181,19 @@ def build_new_account_row(
         "BUCKET": None,
         "ENDO DATE": db("ENDS_DATE"),
         "FLOWING DATE": db("FLOWING_DATE"),
-        "COLL TAGGING": None,
+        "COLL TAGGING": DEFAULT_COLL_TAGGING,
         "ACTION CODE": None,
         "STATUS REMARKS": status_remarks,
         "FV REMARKS": fv_remarks,
         "CLIENT STATUS": None,
         "ADDRESS STATUS": None,
         "UNIT STATUS": None,
-        "PULLED_OUT TAG": None,
+        "PULLED_OUT TAG": DEFAULT_PULLED_OUT_TAG,
         "PULLED_OUT DATE": None,
         "RFD": None,
         "GEO": db("GEO_TAG"),
-        "AGENCY": "SP MADRID",
-        "COLLECTOR": None,
+        "AGENCY": DEFAULT_AGENCY,
+        "COLLECTOR": DEFAULT_COLLECTOR,
     }
 
 
@@ -190,7 +215,6 @@ def apply_reconcile(
     """
     df = daily_df.copy()
 
-    # Add new accounts from DB that user chose to include
     if pns_to_add and db_df is not None:
         new_rows = []
         for pn in pns_to_add:
