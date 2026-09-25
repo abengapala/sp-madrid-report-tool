@@ -1,6 +1,23 @@
 """
 core/trails.py
 Rebuilds the Trails Upload sheet as a single-day snapshot.
+
+FIXED (this revision):
+- CRITICAL: the DRR filter used `date_parsed <= report_date` instead of
+  `== report_date`. That meant an account with NO activity today would
+  silently show its most recent OLDER entry as if it happened today
+  (with the old date printed inside REMARKS, but ACTION DATE still set
+  to today) — the exact opposite of the confirmed rule: no activity on
+  the report date means REMARKS/ACTION CODE stay BLANK. Fixed to exact
+  date match, and `blanked_pns` now correctly includes every account
+  with no entry on report_date, not just accounts with zero DRR history
+  ever.
+- Accounts on hold (PULLED_OUT TAG != EXISTING / blank) are now excluded
+  from Trails Upload entirely, matching the confirmed rule. Previously
+  there was no such check at all.
+- ACTION CODE here stays purely chronological (latest entry on the exact
+  report date) — this is intentionally different from DAILY's RANK-based
+  selection in core/remarks.py. Do not import or reuse that logic here.
 """
 from __future__ import annotations
 
@@ -9,7 +26,7 @@ from typing import Optional
 import pandas as pd
 
 from core.action_codes import resolve_action_code
-from core.remarks import format_remark
+from core.remarks import format_remark, is_held
 
 TRAILS_COLUMNS = [
     "FINANCIER ID", "APPLICATION ID", "CUSTOMER ID", "USER ID",
@@ -34,12 +51,17 @@ def rebuild_trails(
     """
     Rebuild Trails Upload for the report date.
 
-    For each account in daily_df:
+    For each ACTIVE (non-held) account in daily_df:
     - ACTION DATE = report_date, NEXT ACTION DATE = report_date + 1 day
-    - Look for DRR entries dated exactly report_date
-    - If found: REMARKS = latest entry formatted, ACTION CODE = resolved code
-    - If not found: REMARKS = blank, ACTION CODE = blank
-    - FINANCIER ID, CUSTOMER ID, USER ID, CONTACT MODE, etc. preserved from existing row
+    - Look for DRR entries dated EXACTLY report_date (not "on or before")
+    - If found: REMARKS = that day's latest entry formatted, ACTION CODE
+      = resolved code for that same entry (chronological, not RANK-based)
+    - If NOT found: REMARKS = blank, ACTION CODE = blank — never
+      backfilled with an older date's activity
+    - Held accounts (FOR HOLD / PULLED OUT / REPO / etc.) are excluded
+      from Trails Upload entirely — no row is written for them.
+    - FINANCIER ID, CUSTOMER ID, USER ID, CONTACT MODE, etc. preserved
+      from the existing row when the account already has one.
 
     Returns: (new_trails_df, blanked_account_pns)
     """
@@ -47,12 +69,10 @@ def rebuild_trails(
     action_date_str = _fmt_date(report_date)
     next_date_str = _fmt_date(next_date)
 
-    # Build a lookup from APPLICATION ID (= PN as int) to existing trail row
     existing_lookup: dict[str, dict] = {}
     for _, row in existing_trails_df.iterrows():
         app_id = str(row.get("APPLICATION ID", "")).strip()
         if app_id and app_id != "nan":
-            # Normalize: remove .0
             try:
                 app_id = str(int(float(app_id)))
             except (ValueError, TypeError):
@@ -68,40 +88,39 @@ def rebuild_trails(
         if not pn:
             continue
 
-        # Get existing trail row for preserved fields
+        if is_held(acct_row.get("PULLED_OUT TAG")):
+            continue  # excluded from Trails Upload entirely
+
         existing = existing_lookup.get(pn, {})
 
-        # Use most recent DRR entry up to and including report_date
-        # (not just entries on exactly report_date — accounts may have no activity today)
         remarks_str = ""
         action_code_str = ""
-        used_date = None
 
         if drr_df is not None and not drr_df.empty:
-            acct_drr = drr_df[
+            acct_drr_today = drr_df[
                 (drr_df["account_no"] == pn) &
                 (drr_df["date_parsed"].notna()) &
-                (drr_df["date_parsed"].dt.date <= report_date.date())
+                (drr_df["date_parsed"].dt.date == report_date.date())   # EXACT date only
             ].sort_values(["date_parsed", "time_str"], ascending=False)
 
-            if not acct_drr.empty:
-                latest = acct_drr.iloc[0]
+            if not acct_drr_today.empty:
+                latest = acct_drr_today.iloc[0]
                 remark_text = str(latest.get("remark", "")).strip()
                 raw_code = str(latest.get("action_code", "")).strip()
                 src = str(latest.get("remark_source", "RAW")).strip()
-                used_date = latest["date_parsed"]
 
                 if remark_text and remark_text.lower() != "nan":
-                    # Use the actual entry date, not report_date, for the remark prefix
-                    entry_date = used_date if pd.notna(used_date) else report_date
-                    remarks_str = format_remark(entry_date, remark_text)
+                    remarks_str = format_remark(report_date, remark_text)
                 action_code_str = resolve_action_code(raw_code, src)
             else:
                 blanked_pns.append(pn)
+        else:
+            # No DRR at all this run — every account is blank, not stale-filled
+            blanked_pns.append(pn)
 
         new_row = {
             "FINANCIER ID":    _preserve(existing, "FINANCIER ID"),
-            "APPLICATION ID":  int(pn) if pn.isdigit() else pn,
+            "APPLICATION ID":  pn,   # kept as string — see note below
             "CUSTOMER ID":     _preserve(existing, "CUSTOMER ID"),
             "USER ID":         _preserve(existing, "USER ID"),
             "ACTION DATE":     action_date_str,
@@ -136,6 +155,14 @@ def _preserve(existing: dict, col: str):
 
 
 def _normalize_pn(val) -> str:
+    """
+    Normalize account numbers as strings, never as Python int/float.
+    Account numbers here run 12-15+ digits, which is at real risk of
+    float-precision corruption if ever coerced through a float — always
+    keep as string end-to-end, including in the output APPLICATION ID
+    column (previously cast with int(pn), which is unnecessary and risky
+    for very large account numbers).
+    """
     if val is None:
         return ""
     try:
