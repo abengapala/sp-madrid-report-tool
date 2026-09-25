@@ -1,5 +1,16 @@
 """
 ui/diff_preview.py — Step 3: Before/after diff preview for remarks and Trails.
+
+UPDATED (this revision):
+- update_all_remarks now returns 5 values (added repo_ai_added_pns and
+  stale_fv_pns) instead of 3 — updated the call site accordingly.
+- Added a new expander surfacing accounts whose FV REMARKS look stale
+  (had content, but got nothing fresh this run). These are NOT reset
+  automatically — the user picks which ones to reset via checkboxes,
+  and confirming calls core.remarks.reset_stale_fv_remarks only for the
+  ones actually checked. This matches the confirmed process: staleness
+  has no hard cutoff, so it's a judgment call surfaced for review, never
+  applied silently.
 """
 from __future__ import annotations
 
@@ -17,30 +28,37 @@ def render_diff_preview():
 
     original_daily = st.session_state["report_sheets"]["DAILY"]
 
-    # Run the remarks update logic and compute diff
     if "remarks_applied" not in st.session_state:
         with st.spinner("Computing remarks updates..."):
             from core.remarks import update_all_remarks
 
-            # Cutoff = earliest date in DRR
-            cutoff_date = report_date  # default
+            cutoff_date = report_date
             if drr_df is not None and not drr_df.empty:
                 min_drr = drr_df["date_parsed"].dropna().min()
                 if pd.notna(min_drr):
                     cutoff_date = min_drr
 
-            updated_daily, zero_pns, changed_fv_pns = update_all_remarks(
+            (updated_daily, zero_pns, changed_fv_pns,
+             repo_ai_added_pns, stale_fv_pns) = update_all_remarks(
                 daily_df, drr_df, field_df, cutoff_date, report_date
             )
             st.session_state["updated_daily"] = updated_daily
             st.session_state["zero_activity_pns"] = zero_pns
             st.session_state["changed_fv_pns"] = changed_fv_pns
+            st.session_state["repo_ai_added_pns"] = repo_ai_added_pns
+            st.session_state["stale_fv_pns"] = stale_fv_pns
             st.session_state["cutoff_date"] = cutoff_date
             st.session_state["remarks_applied"] = True
 
     updated_daily = st.session_state["updated_daily"]
     zero_pns = st.session_state["zero_activity_pns"]
     changed_fv_pns = st.session_state["changed_fv_pns"]
+    repo_ai_added_pns = st.session_state.get("repo_ai_added_pns", [])
+    stale_fv_pns = st.session_state.get("stale_fv_pns", [])
+
+    pn_to_name = {
+        str(r["PN"]): str(r.get("NAME", "")) for _, r in original_daily.iterrows()
+    }
 
     # ---- Zero-activity alert (always pinned to top) ----
     if zero_pns:
@@ -48,11 +66,35 @@ def render_diff_preview():
             f"⚠️ **{len(zero_pns)} account(s) had NO new DRR activity** on or after the cutoff date. "
             f"These accounts will have their STATUS REMARKS unchanged from cutoff onward."
         )
-        pn_to_name = {
-            str(r["PN"]): str(r.get("NAME", "")) for _, r in original_daily.iterrows()
-        }
         zero_rows = [{"PN": pn, "NAME": pn_to_name.get(pn, "")} for pn in zero_pns]
         st.dataframe(pd.DataFrame(zero_rows), use_container_width=True, hide_index=True)
+        st.markdown("---")
+
+    # ---- Stale FV REMARKS — needs an explicit per-account decision ----
+    if stale_fv_pns:
+        with st.expander(
+            f"🟠 {len(stale_fv_pns)} account(s) have FV REMARKS with no fresh activity this run — reset to 'AWAITING FIELD STATUS'?",
+            expanded=False,
+        ):
+            st.markdown(
+                "These accounts have existing FV REMARKS content, but neither the field file "
+                "nor a REPO AI entry supplied anything current for them this run. Check any you'd "
+                "like reset back to the placeholder (this also resets ADDRESS STATUS to "
+                "`(FOR FIELD VISIT)`) — nothing is reset unless you check it."
+            )
+            reset_choices = {}
+            for pn in stale_fv_pns:
+                name = pn_to_name.get(pn, "")
+                current_fv = str(
+                    updated_daily.loc[updated_daily["PN"].astype(str) == pn, "FV REMARKS"].values[0]
+                    if (updated_daily["PN"].astype(str) == pn).any() else ""
+                )
+                reset_choices[pn] = st.checkbox(
+                    f"`{pn}` — {name}: {current_fv[:80]}{'...' if len(current_fv) > 80 else ''}",
+                    value=False,
+                    key=f"stale_reset_{pn}",
+                )
+            st.session_state["stale_fv_reset_choices"] = reset_choices
         st.markdown("---")
 
     # ---- Tabs ----
@@ -62,7 +104,10 @@ def render_diff_preview():
         _render_remarks_diff(original_daily, updated_daily, "STATUS REMARKS", zero_pns)
 
     with tab2:
-        _render_remarks_diff(original_daily, updated_daily, "FV REMARKS", [], highlight_pns=changed_fv_pns)
+        _render_remarks_diff(
+            original_daily, updated_daily, "FV REMARKS", [],
+            highlight_pns=changed_fv_pns, repo_pns=repo_ai_added_pns,
+        )
 
     with tab3:
         _render_trails_preview(updated_daily, drr_df, report_date)
@@ -76,15 +121,23 @@ def render_diff_preview():
             st.rerun()
     with col_apply:
         if st.button("✅ Apply Changes & Continue", type="primary", key="diff_apply"):
-            st.session_state["daily_df"] = updated_daily
+            final_daily = updated_daily
+            reset_choices = st.session_state.get("stale_fv_reset_choices", {})
+            pns_to_reset = [pn for pn, checked in reset_choices.items() if checked]
+            if pns_to_reset:
+                from core.remarks import reset_stale_fv_remarks
+                final_daily = reset_stale_fv_remarks(final_daily, pns_to_reset)
+            st.session_state["daily_df"] = final_daily
             st.session_state["step"] = 4
             st.rerun()
 
 
-def _render_remarks_diff(original_df, updated_df, col: str, zero_pns: list, highlight_pns: list = None):
+def _render_remarks_diff(original_df, updated_df, col: str, zero_pns: list,
+                          highlight_pns: list = None, repo_pns: list = None):
     orig_lookup = {str(r["PN"]): str(r.get(col, "") or "") for _, r in original_df.iterrows()}
     upd_lookup = {str(r["PN"]): str(r.get(col, "") or "") for _, r in updated_df.iterrows()}
     name_lookup = {str(r["PN"]): str(r.get("NAME", "")) for _, r in updated_df.iterrows()}
+    repo_pns = repo_pns or []
 
     changed = []
     unchanged = []
@@ -97,13 +150,15 @@ def _render_remarks_diff(original_df, updated_df, col: str, zero_pns: list, high
 
     st.markdown(f"**{len(changed)} account(s) changed** | {len(unchanged)} unchanged")
 
-    # Show changed accounts first
     for pn in changed:
         name = name_lookup.get(pn, "")
         label = f"`{pn}` — {name}"
         if pn in zero_pns:
             label += " ⚪ no new activity"
-        with st.expander(f"{'🟡' if highlight_pns and pn in highlight_pns else '🟢'} {label}", expanded=False):
+        if pn in repo_pns:
+            label += " 🏗️ REPO AI mirrored"
+        icon = "🟡" if highlight_pns and pn in highlight_pns else "🟢"
+        with st.expander(f"{icon} {label}", expanded=False):
             c1, c2 = st.columns(2)
             c1.markdown("**BEFORE**")
             c1.text_area("", value=orig_lookup.get(pn, ""), height=150, disabled=True, key=f"b_{col}_{pn}")
@@ -129,6 +184,13 @@ def _render_trails_preview(daily_df, drr_df, report_date):
 
     trails_df = st.session_state["preview_trails"]
     blanked_pns = st.session_state["blanked_pns"]
+
+    held_pns = {
+        str(r["PN"]) for _, r in daily_df.iterrows()
+        if str(r.get("PULLED_OUT TAG", "") or "").strip().upper() not in ("EXISTING", "", "NAN")
+    }
+    if held_pns:
+        st.caption(f"ℹ️ {len(held_pns)} held account(s) excluded from Trails Upload entirely (not counted below).")
 
     if blanked_pns:
         name_lookup = {str(r["PN"]): str(r.get("NAME", "")) for _, r in daily_df.iterrows()}
