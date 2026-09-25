@@ -1,5 +1,16 @@
 """
 ui/ptp_review.py — Step 4: PTP review screen.
+
+UPDATED (this revision):
+- core.output now only ever appends NEW PTP INVENTORY rows and never
+  rewrites the sheet from a full dataframe (existing PTP rows are
+  historical record and must never be regenerated/reordered). This
+  screen now builds `ptp_new_rows_df` — just the confirmed "Add" rows —
+  and stores that in session state instead of a merged ptp_df.
+- The REPO icon condition was already checking for "REPO" in the action
+  code/remark to flag it visually; left as-is since core.ptp's trigger
+  itself is now the tightened "REPO + outcome word" match, so anything
+  reaching this screen already cleared that bar.
 """
 from __future__ import annotations
 
@@ -13,7 +24,8 @@ def render_ptp_review():
     st.markdown("## 💰 Step 4 — PTP Review")
     st.markdown(
         "Review PTP/KEPT/REPO activity detected across DRR and field file. "
-        "Follow-ups on existing rows are applied automatically. "
+        "Follow-ups on existing rows are applied automatically (they update the "
+        "account's STATUS REMARKS as usual — no separate PTP INVENTORY row is added). "
         "New candidates require your explicit decision."
     )
 
@@ -34,7 +46,7 @@ def render_ptp_review():
 
     # --- Section A: Follow-ups (auto-applied, informational) ---
     st.markdown("### ✅ Section A — Follow-ups on Existing PTP INVENTORY Rows")
-    st.markdown("*These are auto-applied. No action needed.*")
+    st.markdown("*These are auto-applied via the normal STATUS REMARKS update. No action needed.*")
     if ptp_result.followup_ptps:
         rows = _candidates_to_df(ptp_result.followup_ptps)
         st.dataframe(rows, use_container_width=True, hide_index=True)
@@ -47,15 +59,16 @@ def render_ptp_review():
     st.markdown("### ❓ Section B — New / Ambiguous PTP Candidates")
     st.markdown(
         "Each candidate below needs an explicit **Add** or **Skip** decision. "
-        "Includes PTP, KEPT, and REPO-tagged entries for accounts **in the current book**."
+        "Includes PTP, KEPT, and REPO(+outcome)-tagged entries for accounts **in the current book**."
     )
 
-    ptp_decisions: dict[str, str] = {}  # pn -> "add" | "skip"
+    ptp_decisions: dict[str, str] = {}
 
     if ptp_result.new_ptps:
         for i, candidate in enumerate(ptp_result.new_ptps):
+            is_repo = "REPO" in candidate.action_code.upper() or "REPO" in candidate.remark.upper()
             with st.expander(
-                f"{'🔴' if 'REPO' in candidate.action_code.upper() or 'REPO' in candidate.remark.upper() else '🟡'} "
+                f"{'🔴' if is_repo else '🟡'} "
                 f"`{candidate.pn}` — {candidate.name} | Source: {candidate.source} | "
                 f"Code: {candidate.action_code or 'N/A'}",
                 expanded=True,
@@ -90,7 +103,7 @@ def render_ptp_review():
     # --- Section C: Out-of-book (report only) ---
     st.markdown("### 🔍 Section C — Out-of-Book PTP Flags *(informational only)*")
     st.markdown(
-        "These accounts have PTP/KEPT/REPO activity in the source files **but are NOT in the current book**. "
+        "These accounts have PTP/KEPT/REPO(+outcome) activity in the source files **but are NOT in the current book**. "
         "No action will be taken — shown here so nothing is silently skipped."
     )
     if ptp_result.out_of_book_ptps:
@@ -112,17 +125,24 @@ def render_ptp_review():
 
 
 def _apply_and_advance(ptp_result, ptp_decisions, ptp_df, daily_df, report_date):
-    from core.ptp import apply_ptp_decisions
+    from core.ptp import build_ptp_inventory_row
 
-    # Collect candidates to add
     to_add = []
     for i, candidate in enumerate(ptp_result.new_ptps):
         key = f"{i}_{candidate.pn}"
         if ptp_decisions.get(key) == "add":
             to_add.append(candidate)
 
-    updated_ptp = apply_ptp_decisions(ptp_df, daily_df, to_add, report_date)
-    st.session_state["ptp_df"] = updated_ptp
+    # Build ONLY the new rows — existing PTP INVENTORY rows are never
+    # touched or regenerated; core.output appends this dataframe as-is.
+    new_rows = [
+        build_ptp_inventory_row(daily_df, c.pn, c, report_date)
+        for c in to_add
+    ]
+    ptp_new_rows_df = pd.DataFrame(new_rows) if new_rows else pd.DataFrame(columns=ptp_df.columns)
+
+    st.session_state["ptp_new_rows_df"] = ptp_new_rows_df
+    st.session_state["ptp_added_count"] = len(new_rows)
     st.session_state["step"] = 5
     st.rerun()
 
