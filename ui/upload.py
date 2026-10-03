@@ -32,9 +32,14 @@ def render_upload():
 
     with col2:
         st.markdown("**Source Files**")
-        drr_file = st.file_uploader("DRR UPDATED (.xlsx)", type=["xlsx"], key="upload_drr")
+        drr_files = st.file_uploader(
+            "DRR Daily Remarks (.csv or .xlsx) — select all days Mon–Fri at once",
+            type=["xlsx", "csv", "xls"],
+            key="upload_drr",
+            accept_multiple_files=True,
+        )
         field_file = st.file_uploader(
-            "Field File (.xlsm or .xlsx)\n\n*Automatically reads OVERALL FIELD sheet*",
+            "CBS Monitoring Template (.xlsm or .xlsx) — tool reads OVERALL FIELD sheet inside",
             type=["xlsm", "xlsx"],
             key="upload_field",
         )
@@ -52,15 +57,14 @@ def render_upload():
 
     st.markdown("---")
 
-    if st.button("🔍 Load & Parse Files", type="primary", key="btn_load"):
+    if st.button("\U0001f50d Load & Parse Files", type="primary", key="btn_load"):
         if report_file is None:
-            st.error("❌ The current report is required.")
+            st.error("\u274c The current report is required.")
             return
+        _parse_and_advance(report_file, password, drr_files, field_file, db_file, report_date)
 
-        _parse_and_advance(report_file, password, drr_file, field_file, db_file, report_date)
 
-
-def _parse_and_advance(report_file, password, drr_file, field_file, db_file, report_date):
+def _parse_and_advance(report_file, password, drr_files, field_file, db_file, report_date):
     from core.file_io import (
         load_report_sheets, load_report_workbook,
         load_drr, load_field_file, load_database,
@@ -87,10 +91,7 @@ def _parse_and_advance(report_file, password, drr_file, field_file, db_file, rep
             st.error(f"❌ Failed to load report: {e}")
             return
 
-    drr_bytes = None
-    if drr_file is not None:
-        drr_bytes = drr_file.read()
-
+    # drr_files is now a list (multi-file upload)
     field_bytes = None
     if field_file is not None:
         field_bytes = field_file.read()
@@ -99,31 +100,41 @@ def _parse_and_advance(report_file, password, drr_file, field_file, db_file, rep
     if db_file is not None:
         db_bytes = db_file.read()
 
-    # 1. Parse DRR
+    # 1. Parse DRR — accepts multiple daily CSV/XLSX files, merges them all
     drr_df = None
-    if drr_bytes is not None:
-        with st.spinner("Parsing DRR..."):
-            try:
-                drr_df = load_drr(drr_bytes, warnings=warnings)
+    drr_file_list = drr_files if drr_files else []
+    if drr_file_list:
+        with st.spinner(f"Parsing {len(drr_file_list)} DRR file(s)..."):
+            parts = []
+            for f in drr_file_list:
+                try:
+                    b = f.read()
+                    part = load_drr(b, warnings=warnings)
+                    parts.append(part)
+                except Exception as e:
+                    errors.append(f"DRR '{f.name}': {e}")
+            if parts:
+                drr_df = pd.concat(parts, ignore_index=True).drop_duplicates()
                 max_date = drr_df["date_parsed"].dropna().max()
                 if pd.notna(max_date):
                     st.session_state["auto_report_date"] = max_date
-                    warnings.append(f"ℹ️ Report date auto-detected from DRR: **{max_date.strftime('%B %d, %Y')}**")
-            except Exception as e:
-                errors.append(f"DRR file error: {e}")
+                    warnings.append(
+                        f"\u2139\ufe0f DRR: **{len(drr_df)}** entries merged from **{len(parts)}** file(s). "
+                        f"Latest date: **{max_date.strftime('%B %d, %Y')}**"
+                    )
     elif field_bytes is not None:
-        # Check if field file (monitoring template) contains a DRR sheet
+        # Fallback: check if monitoring template contains a DRR sheet
         try:
             xl = pd.ExcelFile(io.BytesIO(field_bytes))
             drr_sheet = next((s for s in xl.sheet_names if "DRR" in s.strip().upper()), None)
             if drr_sheet:
                 with st.spinner(f"Extracting DRR from '{drr_sheet}' in monitoring file..."):
                     drr_df = load_drr(field_bytes, sheet_name=drr_sheet, warnings=warnings)
-                    warnings.append(f"ℹ️ DRR entries auto-detected from sheet '{drr_sheet}' in monitoring file.")
+                    warnings.append(f"\u2139\ufe0f DRR entries auto-detected from sheet '{drr_sheet}' in monitoring file.")
                     max_date = drr_df["date_parsed"].dropna().max()
                     if pd.notna(max_date):
                         st.session_state["auto_report_date"] = max_date
-                        warnings.append(f"ℹ️ Report date auto-detected from DRR: **{max_date.strftime('%B %d, %Y')}**")
+                        warnings.append(f"\u2139\ufe0f Report date auto-detected from DRR: **{max_date.strftime('%B %d, %Y')}**")
         except Exception:
             pass
 
