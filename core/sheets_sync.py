@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 from typing import Optional, Tuple
 import pandas as pd
+import numpy as np
 
 try:
     import tomllib
@@ -141,19 +142,31 @@ def save_db_to_sheets(df: pd.DataFrame) -> Tuple[bool, str]:
     try:
         ws = _get_worksheet()
 
-        # Format dataframe for export
-        export_df = df.copy()
-        export_df = export_df.fillna("")
+        import math
 
-        # Convert datetime objects to string
-        for col in export_df.columns:
-            if pd.api.types.is_datetime64_any_dtype(export_df[col]):
-                export_df[col] = export_df[col].dt.strftime("%m/%d/%Y")
-            else:
-                export_df[col] = export_df[col].astype(str).replace("nan", "").replace("None", "")
+        def _clean_cell(val):
+            if val is None or pd.isna(val):
+                return ""
+            if isinstance(val, (float, np.floating)):
+                if math.isnan(val) or math.isinf(val):
+                    return ""
+                return float(val)
+            if isinstance(val, (int, np.integer, bool)):
+                return int(val) if isinstance(val, (int, np.integer)) else bool(val)
+            if pd.api.types.is_datetime64_any_dtype(type(val)) or hasattr(val, "strftime"):
+                try:
+                    return val.strftime("%m/%d/%Y")
+                except Exception:
+                    pass
+            s = str(val).strip()
+            if s.lower() in ("nan", "none", "null", "<na>"):
+                return ""
+            return s
 
-        header = list(export_df.columns)
-        values = [header] + export_df.values.tolist()
+        header = [str(c).strip() for c in df.columns]
+        raw_rows = df.values.tolist()
+        clean_rows = [[_clean_cell(cell) for cell in row] for row in raw_rows]
+        values = [header] + clean_rows
 
         # Ensure sheet grid is large enough for all rows and columns
         req_rows = max(len(values) + 10, 100)
