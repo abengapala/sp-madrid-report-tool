@@ -24,6 +24,20 @@ import pandas as pd
 DEFAULT_PASSWORD = "cbs1234"
 
 # ---------------------------------------------------------------------------
+# Global date anchor — set this to the user-selected report date before
+# loading any DRR / field file so that ambiguous dates (day <= 12, meaning
+# they could be either MM/DD or DD/MM) are resolved toward the nearest
+# plausible date rather than blindly defaulting to US month-first order.
+# ---------------------------------------------------------------------------
+_DATE_ANCHOR: Optional[pd.Timestamp] = None
+
+
+def set_date_anchor(ts: Optional[pd.Timestamp]) -> None:
+    """Set the global anchor used to resolve MM/DD vs DD/MM ambiguity."""
+    global _DATE_ANCHOR
+    _DATE_ANCHOR = ts
+
+# ---------------------------------------------------------------------------
 # Decrypt / Encrypt
 # ---------------------------------------------------------------------------
 
@@ -565,19 +579,79 @@ def _is_numeric(val) -> bool:
 
 
 def _parse_date_flexible(val) -> Optional[pd.Timestamp]:
-    """Parse both datetime objects and DD-MM-YYYY strings."""
-    if pd.isna(val) if not isinstance(val, str) else False:
+    """
+    Parse a date value into a Timestamp, resolving MM/DD vs DD/MM ambiguity.
+
+    Strategy:
+    1. If already a Timestamp/datetime — return as-is (Excel already parsed it).
+    2. Try ISO (YYYY-MM-DD) — unambiguous, always safe.
+    3. For text strings with ambiguous month/day (both <= 12), try BOTH
+       month-first (US) and day-first (PH/EU) interpretations and pick
+       whichever is closest to the global _DATE_ANCHOR (the user-selected
+       report date).  If no anchor is set, fall back to day-first (PH
+       convention used in most CBS DRR exports).
+    4. If only one interpretation parses, use that.
+    """
+    if val is None:
         return None
+    if not isinstance(val, str):
+        try:
+            if pd.isna(val):
+                return None
+        except Exception:
+            pass
     if isinstance(val, pd.Timestamp):
         return val
-    try:
+    import datetime as _dt
+    if isinstance(val, (_dt.datetime, _dt.date)):
         return pd.Timestamp(val)
+
+    s = str(val).strip()
+    if not s or s.lower() in ("nan", "none", "nat", ""):
+        return None
+
+    # --- Try ISO / unambiguous formats first ---
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%d-%b-%Y", "%d %b %Y", "%B %d, %Y"):
+        try:
+            return pd.Timestamp(pd.to_datetime(s, format=fmt))
+        except Exception:
+            pass
+
+    # --- Attempt both MM/DD/YYYY and DD/MM/YYYY interpretations ---
+    ts_mdy: Optional[pd.Timestamp] = None
+    ts_dmy: Optional[pd.Timestamp] = None
+
+    try:
+        ts_mdy = pd.Timestamp(pd.to_datetime(s, dayfirst=False))
     except Exception:
         pass
+
     try:
-        return pd.Timestamp(str(val).strip(), dayfirst=True)
+        ts_dmy = pd.Timestamp(pd.to_datetime(s, dayfirst=True))
     except Exception:
+        pass
+
+    if ts_mdy is None and ts_dmy is None:
         return None
+    if ts_mdy is None:
+        return ts_dmy
+    if ts_dmy is None:
+        return ts_mdy
+
+    # Both parsed — are they the same date?
+    if ts_mdy == ts_dmy:
+        return ts_mdy
+
+    # They differ (day <= 12, genuinely ambiguous).  Use anchor to decide.
+    anchor = _DATE_ANCHOR
+    if anchor is None:
+        # No anchor set yet — default to day-first (PH DRR convention)
+        return ts_dmy
+
+    delta_mdy = abs((ts_mdy - anchor).days)
+    delta_dmy = abs((ts_dmy - anchor).days)
+    # Pick whichever is closer to the anchor (report date)
+    return ts_mdy if delta_mdy <= delta_dmy else ts_dmy
 
 
 def _clean_ptp_date(val) -> Optional[pd.Timestamp]:

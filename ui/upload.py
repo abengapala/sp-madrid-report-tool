@@ -64,10 +64,15 @@ def _parse_and_advance(report_file, password, drr_file, field_file, db_file, rep
     from core.file_io import (
         load_report_sheets, load_report_workbook,
         load_drr, load_field_file, load_database,
+        set_date_anchor,
     )
 
     warnings = []
     errors = []
+
+    # Set the date anchor FIRST so all subsequent date parsing resolves
+    # ambiguous MM/DD vs DD/MM based on the user-selected report date.
+    set_date_anchor(pd.Timestamp(report_date))
 
     with st.spinner("Decrypting and parsing report..."):
         try:
