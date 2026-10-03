@@ -117,7 +117,7 @@ def render_ptp_review():
     with col_back:
         if st.button("← Back", key="ptp_back"):
             del st.session_state["ptp_result"]
-            st.session_state["step"] = 3
+            st.session_state["rec_step"] = 3
             st.rerun()
     with col_confirm:
         if st.button("✅ Confirm PTP Decisions & Continue", type="primary", key="ptp_confirm"):
@@ -143,7 +143,7 @@ def _apply_and_advance(ptp_result, ptp_decisions, ptp_df, daily_df, report_date)
 
     st.session_state["ptp_new_rows_df"] = ptp_new_rows_df
     st.session_state["ptp_added_count"] = len(new_rows)
-    st.session_state["step"] = 5
+    st.session_state["rec_step"] = 5
     st.rerun()
 
 

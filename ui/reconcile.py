@@ -81,7 +81,7 @@ def render_reconcile():
     col_back, col_confirm = st.columns([1, 3])
     with col_back:
         if st.button("← Back", key="reconcile_back"):
-            st.session_state["step"] = 1
+            st.session_state["rec_step"] = 1
             st.rerun()
 
     with col_confirm:
@@ -110,5 +110,5 @@ def _apply_and_advance(result, daily_df, db_df, drr_df, field_df, report_date):
     st.session_state.pop("preview_trails", None)
     st.session_state.pop("ptp_result", None)
     st.session_state.pop("output_bytes", None)
-    st.session_state["step"] = 3
+    st.session_state["rec_step"] = 3
     st.rerun()

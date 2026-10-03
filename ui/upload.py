@@ -226,5 +226,5 @@ def _parse_and_advance(report_file, password, drr_file, field_file, db_file, rep
         st.info(f"📅 Report date set to: **{final_report_date.strftime('%B %d, %Y')}**")
 
     # Advance
-    st.session_state["step"] = 2
+    st.session_state["rec_step"] = 2
     st.rerun()

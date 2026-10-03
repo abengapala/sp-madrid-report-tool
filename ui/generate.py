@@ -45,10 +45,14 @@ def render_generate():
         )
         st.success(f"Password: **{st.session_state.get('password', 'cbs1234')}**")
 
-    col_back, _ = st.columns([1, 4])
+    col_back, col_woff, _ = st.columns([1, 2, 3])
     with col_back:
-        if st.button("← Back", key="gen_back"):
-            st.session_state["step"] = 4
+        if st.button("\u2190 Back", key="gen_back"):
+            st.session_state["rec_step"] = 4
+            st.rerun()
+    with col_woff:
+        if st.button("\ud83d\udccb Write-Off Report \u2192", key="go_woff", help="Go to Step 6 to update the Write-Off Status Report"):
+            st.session_state["step"] = 6
             st.rerun()
 
 

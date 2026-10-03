@@ -117,7 +117,7 @@ def render_diff_preview():
     with col_back:
         if st.button("← Back", key="diff_back"):
             del st.session_state["remarks_applied"]
-            st.session_state["step"] = 2
+            st.session_state["rec_step"] = 2
             st.rerun()
     with col_apply:
         if st.button("✅ Apply Changes & Continue", type="primary", key="diff_apply"):
@@ -128,7 +128,7 @@ def render_diff_preview():
                 from core.remarks import reset_stale_fv_remarks
                 final_daily = reset_stale_fv_remarks(final_daily, pns_to_reset)
             st.session_state["daily_df"] = final_daily
-            st.session_state["step"] = 4
+            st.session_state["rec_step"] = 4
             st.rerun()
 
 
