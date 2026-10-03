@@ -191,23 +191,23 @@ def render_db_manager():
                 st.success(f"Added {pn_val} — {new_vals.get('CUST_NAME', '')} to database.")
                 st.rerun()
 
-    # ── Save / Download ───────────────────────────────────────────────────────
-    st.markdown("---")
-    col_save1, col_save2 = st.columns([2, 2])
-    with col_save1:
-        if st.button("Use This Database for Reports", type="primary", key="dbmgr_use"):
-            st.session_state["db_df"] = df
-            st.success("Database is now active and will be used when generating reports.")
 
-    with col_save2:
-        out_buf = io.BytesIO()
-        df_clean = df.drop(columns=[c for c in df.columns if c.startswith("_")], errors="ignore")
-        df_clean.to_excel(out_buf, index=False)
-        out_buf.seek(0)
-        st.download_button(
-            label="Download Updated database.xlsx",
-            data=out_buf.read(),
-            file_name="database_updated.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key="dbmgr_download",
-        )
+    # ── Status + Download ────────────────────────────────────────────────────
+    st.markdown("---")
+    st.success(
+        "✅ This database is **automatically active** for all report generation. "
+        "Any changes you make here (edits, new accounts) are immediately reflected "
+        "when you switch to Recovery or Write-Off mode."
+    )
+
+    out_buf = io.BytesIO()
+    df_clean = df.drop(columns=[c for c in df.columns if c.startswith("_")], errors="ignore")
+    df_clean.to_excel(out_buf, index=False)
+    out_buf.seek(0)
+    st.download_button(
+        label="📥 Download Updated database.xlsx",
+        data=out_buf.read(),
+        file_name="database_updated.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="dbmgr_download",
+    )

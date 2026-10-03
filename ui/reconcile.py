@@ -17,7 +17,11 @@ def render_reconcile():
     )
 
     daily_df: pd.DataFrame = st.session_state["report_sheets"]["DAILY"]
-    db_df: pd.DataFrame | None = st.session_state.get("db_df")
+    # Use Database Manager if loaded; otherwise fall back to old db_df
+    db_df: pd.DataFrame | None = (
+        st.session_state.get("db_manager_df")
+        or st.session_state.get("db_df")
+    )
     drr_df = st.session_state.get("drr_df")
     field_df = st.session_state.get("field_df")
     report_date: pd.Timestamp = st.session_state["report_date"]
