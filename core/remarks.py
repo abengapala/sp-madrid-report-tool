@@ -441,6 +441,9 @@ def update_all_remarks(
           for review, NOT auto-reset (resetting is a decision the caller/
           UI should confirm, since "stale" has no hard day-count cutoff)
     """
+    from core.status_lookup import get_lookup
+    ref = get_lookup()
+
     df = daily_df.copy()
     is_overall = field_df.attrs.get("is_overall", False) if field_df is not None else False
 
@@ -482,6 +485,29 @@ def update_all_remarks(
             if ac is not None:
                 df.at[idx, "ACTION CODE"] = ac
 
+            # --- STATUS REFERENCE lookup: fill CLIENT/ADDRESS/UNIT STATUS + RFD ---
+            # Mirrors the XLSM formula: XLOOKUP(PN, ACCT_TBL[PN], ACCT_TBL[CURRENT STATUS]).
+            if not window_drr.empty:
+                def _rank_sort_key(v):
+                    try:
+                        return float(v) if v is not None and str(v) not in ("", "nan", "<NA>") else 999.0
+                    except (TypeError, ValueError):
+                        return 999.0
+                best_row = window_drr.copy()
+                if "rank" in best_row.columns:
+                    best_row = best_row.sort_values("rank", key=lambda s: s.apply(_rank_sort_key))
+                best_status_text = str(best_row.iloc[0].get("action_code", "")).strip()
+                ref_result = ref.lookup_drr_status(best_status_text)
+                if ref_result.matched:
+                    if ref_result.client_status:
+                        df.at[idx, "CLIENT STATUS"] = ref_result.client_status
+                    if ref_result.address_status:
+                        df.at[idx, "ADDRESS STATUS"] = ref_result.address_status
+                    if ref_result.unit_status:
+                        df.at[idx, "UNIT STATUS"] = ref_result.unit_status
+                    if ref_result.rfd:
+                        df.at[idx, "RFD"] = ref_result.rfd
+
         # --- FV REMARKS from field file ---
         fv_changed_this_run = False
         if field_df is not None and not field_df.empty:
@@ -497,9 +523,20 @@ def update_all_remarks(
                     changed_fv_pns.append(pn)
                     fv_changed_this_run = True
 
-                updated_row = update_status_columns(dict(df.iloc[idx]), acct_field.iloc[0])
-                for col in ["CLIENT STATUS", "ADDRESS STATUS", "UNIT STATUS", "RFD"]:
-                    df.at[idx, col] = updated_row.get(col, row.get(col))
+                # Use FV reference lookup for ADDRESS STATUS / RFD from latest FV entry.
+                latest_fv_row = acct_field.iloc[0]
+                fv_remark_text = str(latest_fv_row.get("FV REMARK", "") or "").strip()
+                fv_ref = ref.lookup_fv_status(fv_remark_text)
+                if fv_ref.matched:
+                    if fv_ref.address_status:
+                        df.at[idx, "ADDRESS STATUS"] = fv_ref.address_status
+                    if fv_ref.rfd:
+                        df.at[idx, "RFD"] = fv_ref.rfd
+                else:
+                    # Fall back to raw field columns when reference has no match
+                    updated_row = update_status_columns(dict(df.iloc[idx]), latest_fv_row)
+                    for col in ["CLIENT STATUS", "ADDRESS STATUS", "UNIT STATUS", "RFD"]:
+                        df.at[idx, col] = updated_row.get(col, row.get(col))
 
         # --- REPO AI → FV REMARKS mirroring (only if not already updated
         #     by real field data above, and only when genuinely new) ---
