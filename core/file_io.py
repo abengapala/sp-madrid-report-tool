@@ -132,14 +132,28 @@ def load_report_sheets(
     file_bytes: bytes, password: str = DEFAULT_PASSWORD
 ) -> dict[str, pd.DataFrame]:
     """
-    Decrypt the main report and return all 4 sheets as DataFrames.
+    Decrypt the main report and return all sheets as DataFrames.
     Keys: 'DAILY', 'Trails Upload', 'PTP INVENTORY', 'ACTION CODE'
+    Optional key 'NEW-WRITE OFF' is included if that sheet exists.
     """
     buf = decrypt_workbook(file_bytes, password)
 
     sheets = {}
     for sheet in ["DAILY", "Trails Upload", "PTP INVENTORY", "ACTION CODE"]:
         sheets[sheet] = load_sheet_as_df(buf, sheet)
+
+    # Load NEW-WRITE OFF sheet if the report already has one
+    buf.seek(0)
+    wb_peek = openpyxl.load_workbook(buf, read_only=True, data_only=True)
+    nwo_name = next(
+        (s for s in wb_peek.sheetnames
+         if "WRITE" in s.upper() and "NEW" in s.upper()),
+        None,
+    )
+    if nwo_name:
+        sheets["NEW-WRITE OFF"] = load_sheet_as_df(buf, nwo_name)
+    else:
+        sheets["NEW-WRITE OFF"] = None
 
     return sheets
 

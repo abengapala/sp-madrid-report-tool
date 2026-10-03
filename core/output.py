@@ -231,20 +231,16 @@ def build_output_workbook(
     daily_df: pd.DataFrame,
     trails_df: pd.DataFrame,
     ptp_new_rows_df: Optional[pd.DataFrame] = None,
+    nwo_df: Optional[pd.DataFrame] = None,
 ) -> openpyxl.Workbook:
     """
     Edit `source_wb` in place and return it.
 
-    - DAILY and Trails Upload are synced from daily_df / trails_df:
-      existing rows get their values refreshed, new rows are appended
-      with copied styling, nothing is ever deleted here.
-    - PTP INVENTORY only receives NEW rows via ptp_new_rows_df (pass the
-      already-decided "add these" rows — never the full inventory,
-      since existing PTP rows are historical record and must never be
-      rewritten or reordered).
+    - DAILY and Trails Upload are synced from daily_df / trails_df.
+    - NEW-WRITE OFF is synced from nwo_df (same columns as DAILY).
+      If the sheet doesn't exist or nwo_df is None, it is skipped.
+    - PTP INVENTORY only receives NEW rows via ptp_new_rows_df.
     - ACTION CODE sheet is untouched.
-    - Sheet order and every sheet's existing formatting/column widths
-      are preserved exactly as they were in the source file.
     """
     if "DAILY" not in source_wb.sheetnames:
         raise ValueError("Source workbook has no 'DAILY' sheet.")
@@ -253,9 +249,9 @@ def build_output_workbook(
     if "PTP INVENTORY" not in source_wb.sheetnames:
         raise ValueError("Source workbook has no 'PTP INVENTORY' sheet.")
 
-    ws_daily = source_wb["DAILY"]
+    ws_daily  = source_wb["DAILY"]
     ws_trails = source_wb["Trails Upload"]
-    ws_ptp = source_wb["PTP INVENTORY"]
+    ws_ptp    = source_wb["PTP INVENTORY"]
 
     _sync_sheet(ws_daily, daily_df, DAILY_COLUMNS, key_col_name="PN")
     _sync_sheet(ws_trails, trails_df, TRAILS_COLUMNS, key_col_name="APPLICATION ID")
@@ -263,8 +259,18 @@ def build_output_workbook(
     if ptp_new_rows_df is not None and not ptp_new_rows_df.empty:
         _append_ptp_rows(ws_ptp, ptp_new_rows_df, PTP_COLUMNS)
 
-    # ACTION CODE sheet: intentionally left completely untouched.
+    # Sync NEW-WRITE OFF sheet if present in the workbook AND we have data
+    if nwo_df is not None and not nwo_df.empty:
+        nwo_sheet_name = next(
+            (s for s in source_wb.sheetnames
+             if "WRITE" in s.upper() and "NEW" in s.upper()),
+            None,
+        )
+        if nwo_sheet_name:
+            ws_nwo = source_wb[nwo_sheet_name]
+            _sync_sheet(ws_nwo, nwo_df, DAILY_COLUMNS, key_col_name="PN")
 
+    # ACTION CODE sheet: intentionally left completely untouched.
     return source_wb
 
 
@@ -274,7 +280,8 @@ def generate_download(
     trails_df: pd.DataFrame,
     ptp_new_rows_df: Optional[pd.DataFrame],
     password: str = DEFAULT_PASSWORD,
+    nwo_df: Optional[pd.DataFrame] = None,
 ) -> bytes:
     """Edit the source workbook in place, encrypt, and return the .xlsx as bytes."""
-    wb = build_output_workbook(source_wb, daily_df, trails_df, ptp_new_rows_df)
+    wb = build_output_workbook(source_wb, daily_df, trails_df, ptp_new_rows_df, nwo_df)
     return encrypt_workbook(wb, password)

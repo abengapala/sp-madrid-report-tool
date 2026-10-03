@@ -59,20 +59,73 @@ def render_generate():
 def _generate():
     from core.output import generate_download
     from core.trails import rebuild_trails
+    from core.remarks import build_remark_entries, select_daily_action_code, update_fv_remarks
 
     daily_df: pd.DataFrame = st.session_state["daily_df"]
     ptp_new_rows_df: pd.DataFrame = st.session_state.get(
         "ptp_new_rows_df", pd.DataFrame(columns=st.session_state["report_sheets"]["PTP INVENTORY"].columns)
     )
-    source_wb = st.session_state.get("source_wb")
-    drr_df = st.session_state.get("drr_df")
+    source_wb       = st.session_state.get("source_wb")
+    drr_df          = st.session_state.get("drr_df")
+    field_df        = st.session_state.get("field_df")
     existing_trails = st.session_state["report_sheets"]["Trails Upload"]
     report_date: pd.Timestamp = st.session_state["report_date"]
-    password = st.session_state.get("password", "cbs1234")
+    password        = st.session_state.get("password", "cbs1234")
 
     if source_wb is None:
         st.error("❌ Source workbook is missing — cannot edit in place. Re-upload the report and start over.")
         return
+
+    # ── Build updated NWO sheet (if report has one) ──────────────────────────
+    nwo_df_raw = st.session_state["report_sheets"].get("NEW-WRITE OFF")
+    nwo_df = None
+
+    if nwo_df_raw is not None and not nwo_df_raw.empty and drr_df is not None:
+        with st.spinner("Updating NEW-WRITE OFF accounts..."):
+            try:
+                nwo_df = nwo_df_raw.copy()
+
+                # Normalize PN column
+                pn_col = next(
+                    (c for c in nwo_df.columns if str(c).strip().upper() in ("PN", "PN#", "PN NO")),
+                    None,
+                )
+                if pn_col:
+                    nwo_df = nwo_df.rename(columns={pn_col: "PN"})
+
+                # Process each NWO account: update STATUS REMARKS, FV REMARKS, ACTION CODE
+                nwo_pns = [str(r).strip() for r in nwo_df["PN"].dropna() if str(r).strip() not in ("", "nan")]
+
+                for pn in nwo_pns:
+                    acct_drr = drr_df[drr_df["account_no"].astype(str).str.strip() == pn]
+                    if acct_drr.empty:
+                        continue
+                    idx = nwo_df.index[nwo_df["PN"].astype(str).str.strip() == pn]
+                    if len(idx) == 0:
+                        continue
+
+                    # Build new STATUS REMARKS entries (prepend on top of existing)
+                    new_entries = build_remark_entries(acct_drr)
+                    if new_entries:
+                        existing_sr = str(nwo_df.at[idx[0], "STATUS REMARKS"] or "").strip()
+                        joined = ", ".join(new_entries)
+                        nwo_df.at[idx[0], "STATUS REMARKS"] = (
+                            f"{joined}, {existing_sr}" if existing_sr and existing_sr.lower() != "nan"
+                            else joined
+                        )
+                        # Update ACTION CODE from newest activity
+                        ac = select_daily_action_code(acct_drr)
+                        if ac:
+                            nwo_df.at[idx[0], "ACTION CODE"] = ac
+
+                # Update FV REMARKS from field data
+                if field_df is not None and not field_df.empty:
+                    nwo_df = update_fv_remarks(nwo_df, field_df, report_date)
+
+                st.session_state["nwo_df_updated"] = nwo_df
+            except Exception as e:
+                st.warning(f"⚠️ NEW-WRITE OFF update skipped: {e}")
+                nwo_df = None
 
     with st.spinner("Building Trails Upload..."):
         trails_df, blanked_pns = rebuild_trails(daily_df, drr_df, existing_trails, report_date)
@@ -82,7 +135,8 @@ def _generate():
     with st.spinner("Updating workbook in place and encrypting..."):
         try:
             output_bytes = generate_download(
-                source_wb, daily_df, trails_df, ptp_new_rows_df, password
+                source_wb, daily_df, trails_df, ptp_new_rows_df, password,
+                nwo_df=nwo_df,
             )
             st.session_state["output_bytes"] = output_bytes
             st.rerun()
@@ -114,11 +168,15 @@ def _render_summary():
 
     st.markdown(f"### Report Date: {report_date.strftime('%B %d, %Y')}")
 
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Total Accounts", len(daily_df))
-    col2.metric("Added", len(added), delta=f"+{len(added)}" if added else None)
-    col3.metric("Dropped", len(dropped), delta=f"-{len(dropped)}" if dropped else None, delta_color="inverse")
-    col4.metric("New PTP INVENTORY Rows", ptp_added_count, delta=f"+{ptp_added_count}" if ptp_added_count else None)
+    nwo_df_updated = st.session_state.get("nwo_df_updated")
+    nwo_count = len(nwo_df_updated) if nwo_df_updated is not None else 0
+
+    col1, col2, col3, col4, col5 = st.columns(5)
+    col1.metric("DAILY Accounts", len(daily_df))
+    col2.metric("NEW-WRITE OFF", nwo_count)
+    col3.metric("Added", len(added), delta=f"+{len(added)}" if added else None)
+    col4.metric("Dropped", len(dropped), delta=f"-{len(dropped)}" if dropped else None, delta_color="inverse")
+    col5.metric("New PTP INVENTORY Rows", ptp_added_count, delta=f"+{ptp_added_count}" if ptp_added_count else None)
 
     st.markdown("---")
 
