@@ -40,12 +40,45 @@ NEW_ACCT_FIELDS = [
 PLACEMENT_OPTIONS = ["ALL", "RECOVERY", "WRITE OFF", "NEW WRITE OFF", "CURING"]
 
 
+import os
+
+DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "database.pkl")
+
+
+def _save_db(df: pd.DataFrame):
+    """Persist database DataFrame to disk so it survives page refreshes."""
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    df.to_pickle(DB_PATH)
+
+
+def _load_db():
+    """Load database from disk if it exists."""
+    if os.path.exists(DB_PATH):
+        try:
+            return pd.read_pickle(DB_PATH)
+        except Exception:
+            return None
+    return None
+
+
 def render_db_manager():
+    # Auto-load from disk on refresh if session state is empty
+    if st.session_state.get("db_manager_df") is None:
+        saved = _load_db()
+        if saved is not None:
+            st.session_state["db_manager_df"] = saved
+
     st.markdown("## Database Manager")
     st.markdown(
         "Upload `database.xlsx` to view and edit the account list. "
         "Optionally upload the **DataGrid** to see which accounts are no longer active."
     )
+    if st.session_state.get("db_manager_df") is not None and os.path.exists(DB_PATH):
+        import datetime
+        mtime = os.path.getmtime(DB_PATH)
+        saved_at = datetime.datetime.fromtimestamp(mtime).strftime("%b %d %Y %H:%M")
+        st.caption(f"Database auto-saved to disk — last saved: {saved_at}")
+
 
     # ── Upload ──────────────────────────────────────────────────────────────
     col_db, col_dg = st.columns(2)
@@ -71,6 +104,7 @@ def render_db_manager():
                 df_loaded = df_loaded.dropna(how="all").reset_index(drop=True)
                 st.session_state["db_manager_df"] = df_loaded
                 st.session_state["db_manager_raw"] = raw
+                _save_db(df_loaded)
                 st.success(f"✅ Loaded {len(df_loaded)} accounts from database.")
             except Exception as e:
                 st.error(f"Failed to load database: {e}")
@@ -179,6 +213,7 @@ def render_db_manager():
                                 df.loc[mask, tag_col_db] = "REPO"
                     df = df.drop(columns=["_pn_norm"], errors="ignore")
                     st.session_state["db_manager_df"] = df
+                    _save_db(df)
                     st.session_state["db_manager_datagrid_pns"] = None  # clear so panel closes
                     st.success(f"✅ Applied — {po_count} marked Pulled Out, {repo_count} marked Repo.")
                     st.rerun()
@@ -270,6 +305,7 @@ def render_db_manager():
                             df.at[idx, "STATUS"] = new_status
                         df = df.drop(columns=["_pn_norm"])
                         st.session_state["db_manager_df"] = df
+                        _save_db(df)
                         st.success(f"Updated {pn_norm}: PLACEMENT={new_placement}, STATUS={new_status}")
                         st.rerun()
 
@@ -301,6 +337,7 @@ def render_db_manager():
                 new_df = pd.DataFrame([new_row])
                 df = pd.concat([df, new_df], ignore_index=True)
                 st.session_state["db_manager_df"] = df
+                _save_db(df)
                 st.success(f"Added {pn_val} — {new_vals.get('CUST_NAME', '')} to database.")
                 st.rerun()
 
