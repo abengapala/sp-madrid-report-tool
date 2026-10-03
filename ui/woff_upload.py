@@ -58,13 +58,6 @@ def render_woff_upload():
         key="woff_upload_field",
     )
 
-    st.markdown("### DataGrid")
-    datagrid_file = st.file_uploader(
-        "DataGrid (.xlsx) — active accounts from CBS, used to detect pull-outs",
-        type=["xlsx"],
-        key="woff_upload_datagrid",
-    )
-
     st.markdown("---")
 
     if woff_file is None:
@@ -74,10 +67,10 @@ def render_woff_upload():
         if n_drr > 0:
             st.success(f"{n_drr} DRR file(s) selected.")
         if st.button("Load & Parse Files", type="primary", key="woff_btn_parse"):
-            _parse_and_advance(woff_file, woff_pw, drr_files or [], field_file, datagrid_file, pd.Timestamp(report_date))
+            _parse_and_advance(woff_file, woff_pw, drr_files or [], field_file, pd.Timestamp(report_date))
 
 
-def _parse_and_advance(woff_file, woff_pw, drr_files, field_file, datagrid_file, report_date):
+def _parse_and_advance(woff_file, woff_pw, drr_files, field_file, report_date):
     import io
     from core.woff import load_woff_report
     from core.file_io import load_drr, load_field_file, set_date_anchor
@@ -135,28 +128,6 @@ def _parse_and_advance(woff_file, woff_pw, drr_files, field_file, datagrid_file,
                 st.warning(f"Field parse warning: {e}")
     st.session_state["woff_field_df"] = field_df
 
-    # Parse DataGrid — detect pulled-out accounts
-    datagrid_pns = None
-    if datagrid_file is not None:
-        with st.spinner("Parsing DataGrid..."):
-            try:
-                import io as _io
-                dg_raw = pd.read_excel(_io.BytesIO(datagrid_file.read()))
-                dg_raw.columns = [str(c).strip() for c in dg_raw.columns]
-                dg_raw = dg_raw.dropna(how='all')
-                acct_col = next(
-                    (c for c in dg_raw.columns if 'ACCOUNT' in c.upper() and 'NO' in c.upper()),
-                    next((c for c in dg_raw.columns if 'PN' in c.upper()), None)
-                )
-                if acct_col:
-                    def _pn(v):
-                        try: return str(int(float(str(v))))
-                        except: return str(v).strip()
-                    datagrid_pns = set(dg_raw[acct_col].dropna().apply(_pn).tolist())
-                    st.info(f"DataGrid loaded: **{len(datagrid_pns)}** active accounts.")
-            except Exception as e:
-                st.warning(f"DataGrid error: {e}")
-
     for w in warnings:
         st.info(w)
 
@@ -166,31 +137,6 @@ def _parse_and_advance(woff_file, woff_pw, drr_files, field_file, datagrid_file,
         f"Loaded {len(woff_df)} Write-Off accounts. "
         f"DRR: {n_drr} entries. Field: {n_fld} entries."
     )
-
-    # Pull-out detection
-    if datagrid_pns is not None:
-        pn_col = next(
-            (c for c in woff_df.columns if str(c).strip().upper() in ("PN", "PN#", "PN NO")),
-            None,
-        )
-        if pn_col:
-            def _pn_s(v):
-                try: return str(int(float(str(v))))
-                except: return str(v).strip()
-            flagged = [
-                pn for pn in woff_df[pn_col].dropna().apply(_pn_s)
-                if pn and pn not in datagrid_pns and pn.lower() not in ('nan','none','')
-            ]
-            st.session_state["woff_pullout_flagged"] = flagged
-            st.session_state["woff_pullout_decisions"] = {}
-            if flagged:
-                name_col = next((c for c in woff_df.columns if 'NAME' in str(c).upper()), None)
-                name_map = dict(zip(woff_df[pn_col].apply(_pn_s), woff_df[name_col])) if name_col else {}
-                st.session_state["woff_pullout_name_map"] = name_map
-                st.warning(f"{len(flagged)} Write-Off account(s) not in DataGrid — review in next step.")
-                st.session_state["woff_step"] = "pullout"
-                st.rerun()
-                return
 
     st.session_state["woff_step"] = 2
     st.rerun()

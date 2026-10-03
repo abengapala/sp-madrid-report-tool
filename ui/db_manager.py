@@ -44,35 +44,148 @@ def render_db_manager():
     st.markdown("## Database Manager")
     st.markdown(
         "Upload `database.xlsx` to view and edit the account list. "
-        "Changes here are used when generating Recovery and Write-Off reports."
+        "Optionally upload the **DataGrid** to see which accounts are no longer active."
     )
 
     # ── Upload ──────────────────────────────────────────────────────────────
-    col_up, col_info = st.columns([2, 1])
-    with col_up:
+    col_db, col_dg = st.columns(2)
+    with col_db:
         db_file = st.file_uploader(
-            "Upload database.xlsx",
+            "📂 Upload database.xlsx",
             type=["xlsx"],
             key="dbmgr_upload",
+        )
+    with col_dg:
+        dg_file = st.file_uploader(
+            "📊 Upload DataGrid.xlsx (optional — compares active accounts)",
+            type=["xlsx"],
+            key="dbmgr_datagrid",
         )
 
     if db_file is not None:
         with st.spinner("Loading database..."):
             try:
                 raw = db_file.read()
-                df = pd.read_excel(io.BytesIO(raw))
-                df.columns = [str(c).strip() for c in df.columns]
-                df = df.dropna(how="all").reset_index(drop=True)
-                st.session_state["db_manager_df"] = df
+                df_loaded = pd.read_excel(io.BytesIO(raw))
+                df_loaded.columns = [str(c).strip() for c in df_loaded.columns]
+                df_loaded = df_loaded.dropna(how="all").reset_index(drop=True)
+                st.session_state["db_manager_df"] = df_loaded
                 st.session_state["db_manager_raw"] = raw
-                st.success(f"Loaded {len(df)} accounts from database.")
+                st.success(f"✅ Loaded {len(df_loaded)} accounts from database.")
             except Exception as e:
                 st.error(f"Failed to load database: {e}")
+
+    if dg_file is not None:
+        with st.spinner("Loading DataGrid..."):
+            try:
+                dg_raw = pd.read_excel(io.BytesIO(dg_file.read()))
+                dg_raw.columns = [str(c).strip() for c in dg_raw.columns]
+                dg_raw = dg_raw.dropna(how="all")
+                acct_col = next(
+                    (c for c in dg_raw.columns if "ACCOUNT" in c.upper() and "NO" in c.upper()),
+                    next((c for c in dg_raw.columns if "PN" in c.upper()), None),
+                )
+                if acct_col:
+                    def _pn_dg(v):
+                        try: return str(int(float(str(v))))
+                        except: return str(v).strip()
+                    datagrid_pns = set(dg_raw[acct_col].dropna().apply(_pn_dg).tolist())
+                    st.session_state["db_manager_datagrid_pns"] = datagrid_pns
+                    st.success(f"✅ DataGrid loaded: **{len(datagrid_pns)}** active accounts.")
+                else:
+                    st.error("DataGrid: could not find Account No. column.")
+            except Exception as e:
+                st.error(f"DataGrid error: {e}")
 
     df = st.session_state.get("db_manager_df")
     if df is None:
         st.info("Upload database.xlsx to get started.")
         return
+
+    datagrid_pns = st.session_state.get("db_manager_datagrid_pns")
+
+    # ── DataGrid Comparison ──────────────────────────────────────────────────
+    if datagrid_pns is not None:
+        def _pn_norm(v):
+            try: return str(int(float(str(v))))
+            except: return str(v).strip()
+
+        pn_col_db = next(
+            (c for c in df.columns if str(c).strip().upper() in ("PN_NO", "PN", "PN#")),
+            None,
+        )
+        name_col_db  = next((c for c in df.columns if "CUST_NAME" in c.upper() or c.upper() == "NAME"), None)
+        tag_col_db   = next((c for c in df.columns if c.upper() == "STATUS"), None)
+        place_col_db = next((c for c in df.columns if c.upper() == "PLACEMENT"), None)
+
+        if pn_col_db:
+            df["_pn_norm"] = df[pn_col_db].apply(_pn_norm)
+            not_in_dg = df[~df["_pn_norm"].isin(datagrid_pns)].copy()
+            # Only flag active placements (ignore Curing which was never on a report)
+            active_placements = {"RECOVERY", "WRITE OFF", "NEW WRITE OFF"}
+            if place_col_db:
+                not_in_dg = not_in_dg[
+                    not_in_dg[place_col_db].astype(str).str.strip().str.upper().isin(active_placements)
+                ]
+
+            if not not_in_dg.empty:
+                st.markdown("---")
+                st.warning(
+                    f"⚠️ **{len(not_in_dg)} account(s)** in your database are **NOT in the DataGrid** "
+                    "(they may have been pulled out or repossessed). Review each one:"
+                )
+                OPTIONS = ["Keep (check later)", "Pulled Out", "Repossessed"]
+                decisions = st.session_state.get("db_manager_dg_decisions", {})
+
+                updated_decisions = {}
+                for _, row in not_in_dg.iterrows():
+                    pn   = row["_pn_norm"]
+                    name = str(row.get(name_col_db, "")) if name_col_db else ""
+                    placement = str(row.get(place_col_db, "")) if place_col_db else ""
+                    c1, c2, c3 = st.columns([2, 2, 2])
+                    with c1:
+                        st.markdown(f"**`{pn}`**  {name}")
+                    with c2:
+                        st.caption(f"Placement: {placement}")
+                    with c3:
+                        current = decisions.get(pn, "Keep (check later)")
+                        choice = st.selectbox(
+                            "Decision",
+                            OPTIONS,
+                            index=OPTIONS.index(current) if current in OPTIONS else 0,
+                            key=f"dbmgr_dg_{pn}",
+                            label_visibility="collapsed",
+                        )
+                        updated_decisions[pn] = choice
+
+                po_count   = sum(1 for v in updated_decisions.values() if v == "Pulled Out")
+                repo_count = sum(1 for v in updated_decisions.values() if v == "Repossessed")
+
+                if st.button(
+                    f"✅ Apply Decisions ({po_count} Pulled Out, {repo_count} Repo)",
+                    type="primary",
+                    key="dbmgr_apply_dg",
+                ):
+                    st.session_state["db_manager_dg_decisions"] = updated_decisions
+                    for pn, decision in updated_decisions.items():
+                        mask = df["_pn_norm"] == pn
+                        if decision == "Pulled Out":
+                            if place_col_db:
+                                df.loc[mask, place_col_db] = "PULLED OUT"
+                            if tag_col_db:
+                                df.loc[mask, tag_col_db] = "PULLED OUT"
+                        elif decision == "Repossessed":
+                            if tag_col_db:
+                                df.loc[mask, tag_col_db] = "REPO"
+                    df = df.drop(columns=["_pn_norm"], errors="ignore")
+                    st.session_state["db_manager_df"] = df
+                    st.session_state["db_manager_datagrid_pns"] = None  # clear so panel closes
+                    st.success(f"✅ Applied — {po_count} marked Pulled Out, {repo_count} marked Repo.")
+                    st.rerun()
+            else:
+                st.success("✅ All active accounts in your database are present in the DataGrid.")
+            df = df.drop(columns=["_pn_norm"], errors="ignore")
+
 
     # ── Summary counts ───────────────────────────────────────────────────────
     st.markdown("---")
