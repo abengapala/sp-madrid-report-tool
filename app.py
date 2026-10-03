@@ -80,6 +80,11 @@ if "rec_step" not in st.session_state:
     st.session_state["rec_step"] = 1
 if "woff_step" not in st.session_state:
     st.session_state["woff_step"] = 1
+if st.session_state.get("db_manager_df") is None:
+    from ui.db_manager import _load_db
+    _df = _load_db()
+    if _df is not None:
+        st.session_state["db_manager_df"] = _df
 
 # ---------------------------------------------------------------------------
 # Sidebar

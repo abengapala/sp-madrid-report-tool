@@ -45,24 +45,52 @@ import os
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "database.pkl")
 
 
-def _save_db(df: pd.DataFrame):
-    """Persist database DataFrame to disk so it survives page refreshes."""
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    df.to_pickle(DB_PATH)
+def _save_db(df: pd.DataFrame, sync_cloud: bool = True):
+    """Persist database DataFrame to disk so it survives page refreshes, and sync to Google Sheets."""
+    try:
+        os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+        df.to_pickle(DB_PATH)
+    except Exception as e:
+        print(f"Error saving local DB: {e}")
+
+    if sync_cloud:
+        try:
+            from core.sheets_sync import is_sheets_configured, save_db_to_sheets
+            if is_sheets_configured():
+                save_db_to_sheets(df)
+        except Exception as e:
+            print(f"Error syncing DB to Google Sheets: {e}")
 
 
 def _load_db():
-    """Load database from disk if it exists."""
+    """Load database from disk or Google Sheets."""
+    # 1. Try local disk cache
     if os.path.exists(DB_PATH):
         try:
-            return pd.read_pickle(DB_PATH)
+            df = pd.read_pickle(DB_PATH)
+            if df is not None and not df.empty:
+                return df
         except Exception:
-            return None
+            pass
+
+    # 2. Try Google Sheets if local cache is absent (e.g. Deep Freeze restart)
+    try:
+        from core.sheets_sync import is_sheets_configured, load_db_from_sheets
+        if is_sheets_configured():
+            df_cloud = load_db_from_sheets()
+            if df_cloud is not None and not df_cloud.empty:
+                _save_db(df_cloud, sync_cloud=False)
+                return df_cloud
+    except Exception as e:
+        print(f"Error loading DB from Google Sheets: {e}")
+
     return None
 
 
 def render_db_manager():
-    # Auto-load from disk on refresh if session state is empty
+    from core.sheets_sync import is_sheets_configured, save_db_to_sheets, load_db_from_sheets
+
+    # Auto-load from disk or Google Sheets on refresh if session state is empty
     if st.session_state.get("db_manager_df") is None:
         saved = _load_db()
         if saved is not None:
@@ -73,11 +101,29 @@ def render_db_manager():
         "Upload `database.xlsx` to view and edit the account list. "
         "Optionally upload the **DataGrid** to see which accounts are no longer active."
     )
-    if st.session_state.get("db_manager_df") is not None and os.path.exists(DB_PATH):
-        import datetime
-        mtime = os.path.getmtime(DB_PATH)
-        saved_at = datetime.datetime.fromtimestamp(mtime).strftime("%b %d %Y %H:%M")
-        st.caption(f"Database auto-saved to disk — last saved: {saved_at}")
+
+    sheets_ok = is_sheets_configured()
+    col_c1, col_c2 = st.columns([3, 1])
+    with col_c1:
+        if sheets_ok:
+            st.success("☁️ **Google Sheets Connected** (`SP_MADRID_DB`). Data persists across Deep Freeze reboots!", icon="☁️")
+        elif os.path.exists(DB_PATH):
+            import datetime
+            mtime = os.path.getmtime(DB_PATH)
+            saved_at = datetime.datetime.fromtimestamp(mtime).strftime("%b %d %Y %H:%M")
+            st.caption(f"Database auto-saved to disk — last saved: {saved_at}")
+    with col_c2:
+        if sheets_ok:
+            if st.button("🔄 Pull from Cloud", help="Pull latest database from Google Sheets tab SP_MADRID_DB", use_container_width=True):
+                with st.spinner("Syncing from Google Sheets..."):
+                    cloud_df = load_db_from_sheets()
+                    if cloud_df is not None and not cloud_df.empty:
+                        st.session_state["db_manager_df"] = cloud_df
+                        _save_db(cloud_df, sync_cloud=False)
+                        st.success(f"Synced {len(cloud_df)} accounts from Google Sheets!")
+                        st.rerun()
+                    else:
+                        st.warning("Google Sheets tab SP_MADRID_DB is empty or not yet populated.")
 
 
     # ── Upload ──────────────────────────────────────────────────────────────

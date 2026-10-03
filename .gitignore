@@ -10,3 +10,7 @@ venv/
 
 # Persistent local data
 data/
+
+# Streamlit secrets (contains private keys)
+.streamlit/secrets.toml
+.streamlit/
