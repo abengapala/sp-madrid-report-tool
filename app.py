@@ -104,19 +104,28 @@ with st.sidebar:
 
     # Mode selector
     mode_choice = st.radio(
-        "Select Report Type",
-        options=["\U0001f7e6  Recovery Report", "\U0001f7e5  Write-Off Report"],
-        index=0 if st.session_state["mode"] != "woff" else 1,
+        "Select Mode",
+        options=["\U0001f7e6  Recovery Report", "\U0001f7e5  Write-Off Report", "\U0001f4cb  Database Manager"],
+        index=0 if st.session_state["mode"] not in ("woff","db") else (1 if st.session_state["mode"]=="woff" else 2),
         key="mode_radio",
     )
     is_woff = "Write-Off" in mode_choice
-    new_mode = "woff" if is_woff else "recovery"
+    is_db   = "Database" in mode_choice
+    new_mode = "woff" if is_woff else ("db" if is_db else "recovery")
     if st.session_state["mode"] != new_mode:
         st.session_state["mode"] = new_mode
 
     st.markdown("---")
 
-    if not is_woff:
+    if is_db:
+        st.markdown("\U0001f4cb **Database Manager**")
+        db_df_loaded = st.session_state.get("db_manager_df")
+        if db_df_loaded is not None:
+            st.markdown(f"**Loaded:** {len(db_df_loaded)} accounts")
+        else:
+            st.caption("Upload database.xlsx to start")
+
+    elif not is_woff:
         # Recovery steps
         st.markdown("\U0001f7e6 **Recovery Report** *(Wed + Fri)*")
         current_step = st.session_state["rec_step"]
@@ -136,6 +145,7 @@ with st.sidebar:
         daily = st.session_state.get("daily_df") or st.session_state.get("report_sheets", {}).get("DAILY")
         if daily is not None:
             st.markdown(f"**Accounts**: {len(daily)}")
+
     else:
         # Write-Off steps
         st.markdown("\U0001f7e5 **Write-Off Report** *(Fri only)*")
@@ -187,7 +197,11 @@ with st.sidebar:
 # ---------------------------------------------------------------------------
 mode = st.session_state["mode"]
 
-if mode == "recovery" or mode is None:
+if mode == "db":
+    from ui.db_manager import render_db_manager
+    render_db_manager()
+
+elif mode == "recovery" or mode is None:
     step = st.session_state["rec_step"]
     if step == 1:
         from ui.upload import render_upload
