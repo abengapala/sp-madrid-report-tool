@@ -43,7 +43,11 @@ def render_upload():
             type=["xlsm", "xlsx"],
             key="upload_field",
         )
-        db_file = st.file_uploader("Account Database (.xlsx)", type=["xlsx"], key="upload_db")
+        datagrid_file = st.file_uploader(
+            "DataGrid (.xlsx) — active accounts list from CBS, used to detect pull-outs",
+            type=["xlsx"],
+            key="upload_datagrid",
+        )
 
     # Report date
     st.markdown("---")
@@ -61,7 +65,7 @@ def render_upload():
         if report_file is None:
             st.error("\u274c The current report is required.")
             return
-        _parse_and_advance(report_file, password, drr_files, field_file, db_file, report_date)
+        _parse_and_advance(report_file, password, drr_files, field_file, datagrid_file, report_date)
 
 
 def _parse_and_advance(report_file, password, drr_files, field_file, db_file, report_date):
@@ -161,52 +165,50 @@ def _parse_and_advance(report_file, password, drr_files, field_file, db_file, re
         except Exception:
             pass
 
-    # 3. Parse Database
-    db_df = None
+    # 3. Parse DataGrid — detect pulled-out accounts
+    datagrid_pns = None
     if db_bytes is not None:
-        with st.spinner("Parsing account database..."):
+        with st.spinner("Parsing DataGrid..."):
             try:
-                db_df, db_warnings = load_database(db_bytes)
-                warnings.extend(db_warnings)
+                dg_raw = pd.read_excel(io.BytesIO(db_bytes))
+                dg_raw.columns = [str(c).strip() for c in dg_raw.columns]
+                dg_raw = dg_raw.dropna(how='all')
+                # Find account number column
+                acct_col = next(
+                    (c for c in dg_raw.columns if 'ACCOUNT' in c.upper() and 'NO' in c.upper()),
+                    next((c for c in dg_raw.columns if 'PN' in c.upper()), None)
+                )
+                if acct_col:
+                    def _pn(v):
+                        try: return str(int(float(str(v))))
+                        except: return str(v).strip()
+                    datagrid_pns = set(dg_raw[acct_col].dropna().apply(_pn).tolist())
+                    warnings.append(f"\u2139\ufe0f DataGrid loaded: **{len(datagrid_pns)}** active accounts found.")
+                else:
+                    errors.append("DataGrid: could not find Account No. column.")
             except Exception as e:
-                errors.append(f"Database error: {e}")
-    else:
-        # Check field_bytes or drr_bytes for DATABASE sheet
-        for source_b, source_label in [(field_bytes, "monitoring file"), (drr_bytes, "uploaded file")]:
-            if source_b is not None:
-                try:
-                    xl = pd.ExcelFile(io.BytesIO(source_b))
-                    db_sheet = next((s for s in xl.sheet_names if s.strip().upper() in ("DATABASE", "DB", "ACCOUNTS")), None)
-                    if db_sheet:
-                        with st.spinner(f"Extracting account database from '{db_sheet}' in {source_label}..."):
-                            db_df, db_warnings = load_database(source_b, sheet_name=db_sheet)
-                            warnings.append(f"ℹ️ Account database auto-detected from sheet '{db_sheet}' in {source_label}.")
-                            warnings.extend(db_warnings)
-                            break
-                except Exception:
-                    pass
+                errors.append(f"DataGrid error: {e}")
 
-    # Show errors (hard errors that prevent loading)
+    # Show errors
     if errors:
         for err in errors:
-            st.error(f"❌ {err}")
+            st.error(f"\u274c {err}")
         st.warning("Please check the uploaded files or upload them in the corresponding slots.")
         return
 
-    # Show warnings — separate hard column shift warnings from soft info
+    # Show warnings
     blocking_warnings = [w for w in warnings if "COLUMN ALIGNMENT WARNING" in w]
     soft_warnings = [w for w in warnings if w not in blocking_warnings]
 
     for w in soft_warnings:
-        if w.startswith("⚠️"):
+        if w.startswith("\u26a0\ufe0f"):
             st.warning(w)
         else:
             st.info(w)
 
-    # Only block if there is a genuine column shift (majority of PNs are not account numbers)
     if blocking_warnings:
         for w in blocking_warnings:
-            st.error(f"🚫 {w}")
+            st.error(f"\U0001f6ab {w}")
         st.error(
             "The field file columns appear to be shifted or headers are missing. "
             "The PN column is mostly not account numbers. Please re-check the file and try again."
@@ -219,23 +221,58 @@ def _parse_and_advance(report_file, password, drr_files, field_file, db_file, re
     st.session_state["report_date"] = final_report_date
 
     # Store parsed data
-    st.session_state["drr_df"] = drr_df
+    st.session_state["drr_df"]   = drr_df
     st.session_state["field_df"] = field_df
-    st.session_state["db_df"] = db_df
+    st.session_state["db_df"]    = None  # not used; DataGrid replaces it
 
-    daily_df = sheets["DAILY"]
+    daily_df  = sheets["DAILY"]
     acct_count = len(daily_df)
-    drr_count = len(drr_df) if drr_df is not None else 0
+    drr_count  = len(drr_df)   if drr_df   is not None else 0
     field_count = len(field_df) if field_df is not None else 0
 
     st.success(
-        f"✅ Loaded successfully — **{acct_count}** accounts in report | "
+        f"\u2705 Loaded successfully \u2014 **{acct_count}** accounts in report | "
         f"**{drr_count}** DRR entries | **{field_count}** field entries"
     )
-
     if auto_date:
-        st.info(f"📅 Report date set to: **{final_report_date.strftime('%B %d, %Y')}**")
+        st.info(f"\U0001f4c5 Report date set to: **{final_report_date.strftime('%B %d, %Y')}**")
 
-    # Advance
+    # DataGrid pull-out detection
+    if datagrid_pns is not None:
+        def _pn_s(v):
+            try: return str(int(float(str(v))))
+            except: return str(v).strip()
+
+        pn_col = next(
+            (c for c in daily_df.columns if str(c).strip().upper() in ("PN", "PN#", "PN NO")),
+            None
+        )
+        if pn_col:
+            report_pns_series = daily_df[pn_col].dropna().apply(_pn_s)
+            flagged = [
+                pn for pn in report_pns_series
+                if pn and pn not in datagrid_pns and pn.lower() not in ('nan','none','')
+            ]
+            st.session_state["pullout_flagged_pns"] = flagged
+            st.session_state["pullout_decisions"]   = {}  # will be filled in reconcile step
+
+            if flagged:
+                name_map = {}
+                if pn_col:
+                    name_col = next((c for c in daily_df.columns if 'NAME' in str(c).upper()), None)
+                    if name_col:
+                        name_map = dict(zip(daily_df[pn_col].apply(_pn_s), daily_df[name_col]))
+                st.session_state["pullout_name_map"] = name_map
+                st.warning(
+                    f"\u26a0\ufe0f **{len(flagged)} account(s)** are in your report but NOT in the DataGrid. "
+                    "Please review them in the next step."
+                )
+                st.session_state["rec_step"] = "pullout"  # special pull-out review step
+                st.rerun()
+                return
+        else:
+            st.session_state["pullout_flagged_pns"] = []
+
+    # Advance to Step 2
     st.session_state["rec_step"] = 2
     st.rerun()

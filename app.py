@@ -192,6 +192,9 @@ if mode == "recovery" or mode is None:
     if step == 1:
         from ui.upload import render_upload
         render_upload()
+    elif step == "pullout":
+        from ui.pullout_review import render_pullout_review
+        render_pullout_review()
     elif step == 2:
         from ui.reconcile import render_reconcile
         render_reconcile()
