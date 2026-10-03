@@ -33,7 +33,8 @@ def render_upload():
     with col2:
         st.markdown("**Source Files**")
         drr_files = st.file_uploader(
-            "DRR Daily Remarks (.csv or .xlsx) — select all days Mon–Fri at once",
+            "DRR Daily Remarks (.csv or .xlsx) — "
+            "Wednesday report: upload Fri→Wed DRRs | Friday report: upload Wed→Fri DRRs",
             type=["xlsx", "csv", "xls"],
             key="upload_drr",
             accept_multiple_files=True,

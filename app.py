@@ -208,11 +208,83 @@ if mode == "recovery" or mode is None:
         from ui.generate import render_generate
         render_generate()
 
+
 elif mode == "woff":
     step = st.session_state["woff_step"]
     if step == 1:
         from ui.woff_upload import render_woff_upload
         render_woff_upload()
+    elif step == "pullout":
+        import pandas as pd
+        flagged   = st.session_state.get("woff_pullout_flagged", [])
+        name_map  = st.session_state.get("woff_pullout_name_map", {})
+        decisions = st.session_state.get("woff_pullout_decisions", {})
+
+        st.markdown("## \u26a0\ufe0f Write-Off Pull-Out Review")
+        st.markdown(
+            f"**{len(flagged)} account(s)** are in your Write-Off report but were "
+            "**not found in the DataGrid**. Choose what happened to each:"
+        )
+        st.info(
+            "**Pulled Out** \u2192 removed from the Write-Off report  \n"
+            "**Repossessed** \u2192 kept, PULLED\\_OUT TAG set to REPO  \n"
+            "**Keep (check later)** \u2192 no change"
+        )
+        st.markdown("---")
+
+        OPTIONS = ["Keep (check later)", "Pulled Out", "Repossessed"]
+        updated = {}
+        for pn in flagged:
+            name = name_map.get(pn, "")
+            c1, c2 = st.columns([3, 2])
+            with c1:
+                st.markdown(f"**`{pn}`** \u2014 {name}")
+            with c2:
+                choice = st.selectbox(
+                    "Decision", OPTIONS,
+                    index=OPTIONS.index(decisions.get(pn, "Keep (check later)")),
+                    key=f"woff_po_{pn}",
+                    label_visibility="collapsed",
+                )
+                updated[pn] = choice
+
+        st.markdown("---")
+        po = sum(1 for v in updated.values() if v == "Pulled Out")
+        rp = sum(1 for v in updated.values() if v == "Repossessed")
+        if po or rp:
+            st.info(f"{po} will be removed | {rp} marked REPO")
+
+        cb, cc = st.columns([1, 3])
+        with cb:
+            if st.button("Back to Upload", key="woff_po_back"):
+                st.session_state["woff_step"] = 1
+                st.rerun()
+        with cc:
+            if st.button("Confirm and Continue", type="primary", key="woff_po_confirm"):
+                st.session_state["woff_pullout_decisions"] = updated
+                woff_df = st.session_state.get("woff_df_loaded", pd.DataFrame()).copy()
+                pn_col = next(
+                    (c for c in woff_df.columns if str(c).strip().upper() in ("PN", "PN#", "PN NO")),
+                    None,
+                )
+                tag_col = next(
+                    (c for c in woff_df.columns if "PULLED" in str(c).upper() and "TAG" in str(c).upper()),
+                    None,
+                )
+                if pn_col:
+                    def _p(v):
+                        try: return str(int(float(str(v))))
+                        except: return str(v).strip()
+                    po_pns   = {pn for pn, d in updated.items() if d == "Pulled Out"}
+                    repo_pns = {pn for pn, d in updated.items() if d == "Repossessed"}
+                    woff_df["_pn"] = woff_df[pn_col].apply(_p)
+                    woff_df = woff_df[~woff_df["_pn"].isin(po_pns)].copy()
+                    if tag_col and repo_pns:
+                        woff_df.loc[woff_df["_pn"].isin(repo_pns), tag_col] = "REPO"
+                    woff_df = woff_df.drop(columns=["_pn"])
+                    st.session_state["woff_df_loaded"] = woff_df
+                st.session_state["woff_step"] = 2
+                st.rerun()
     elif step == 2:
         from ui.woff_preview import render_woff_preview
         render_woff_preview()
