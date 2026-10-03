@@ -155,7 +155,13 @@ def save_db_to_sheets(df: pd.DataFrame) -> Tuple[bool, str]:
         header = list(export_df.columns)
         values = [header] + export_df.values.tolist()
 
-        # Clear only this dedicated worksheet
+        # Ensure sheet grid is large enough for all rows and columns
+        req_rows = max(len(values) + 10, 100)
+        req_cols = max(len(header) + 5, 20)
+        if ws.row_count < req_rows or ws.col_count < req_cols:
+            ws.resize(rows=max(ws.row_count, req_rows), cols=max(ws.col_count, req_cols))
+
+        # Clear only this dedicated worksheet (SP_MADRID_DB)
         ws.clear()
         # Write values
         ws.update(values)

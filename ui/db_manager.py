@@ -45,7 +45,7 @@ import os
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "database.pkl")
 
 
-def _save_db(df: pd.DataFrame, sync_cloud: bool = True):
+def _save_db(df: pd.DataFrame, sync_cloud: bool = True) -> tuple[bool, str]:
     """Persist database DataFrame to disk so it survives page refreshes, and sync to Google Sheets."""
     try:
         os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
@@ -57,9 +57,11 @@ def _save_db(df: pd.DataFrame, sync_cloud: bool = True):
         try:
             from core.sheets_sync import is_sheets_configured, save_db_to_sheets
             if is_sheets_configured():
-                save_db_to_sheets(df)
+                return save_db_to_sheets(df)
         except Exception as e:
-            print(f"Error syncing DB to Google Sheets: {e}")
+            return False, f"Cloud sync error: {e}"
+
+    return True, "Saved locally."
 
 
 def _load_db():
@@ -103,7 +105,7 @@ def render_db_manager():
     )
 
     sheets_ok = is_sheets_configured()
-    col_c1, col_c2 = st.columns([3, 1])
+    col_c1, col_c2, col_c3 = st.columns([2.5, 1, 1])
     with col_c1:
         if sheets_ok:
             st.success("☁️ **Google Sheets Connected** (`SP_MADRID_DB`). Data persists across Deep Freeze reboots!", icon="☁️")
@@ -113,6 +115,15 @@ def render_db_manager():
             saved_at = datetime.datetime.fromtimestamp(mtime).strftime("%b %d %Y %H:%M")
             st.caption(f"Database auto-saved to disk — last saved: {saved_at}")
     with col_c2:
+        if sheets_ok and st.session_state.get("db_manager_df") is not None:
+            if st.button("☁️ Push to Cloud", help="Sync current database in tool to Google Sheets tab SP_MADRID_DB", use_container_width=True):
+                with st.spinner("Pushing to Google Sheets tab SP_MADRID_DB..."):
+                    ok, msg = save_db_to_sheets(st.session_state["db_manager_df"])
+                    if ok:
+                        st.success("✅ Synced to Google Sheet!")
+                    else:
+                        st.error(f"Failed: {msg}")
+    with col_c3:
         if sheets_ok:
             if st.button("🔄 Pull from Cloud", help="Pull latest database from Google Sheets tab SP_MADRID_DB", use_container_width=True):
                 with st.spinner("Syncing from Google Sheets..."):
@@ -150,8 +161,12 @@ def render_db_manager():
                 df_loaded = df_loaded.dropna(how="all").reset_index(drop=True)
                 st.session_state["db_manager_df"] = df_loaded
                 st.session_state["db_manager_raw"] = raw
-                _save_db(df_loaded)
+                ok, msg = _save_db(df_loaded)
                 st.success(f"✅ Loaded {len(df_loaded)} accounts from database.")
+                if ok:
+                    st.success(f"☁️ {msg}")
+                elif msg:
+                    st.warning(f"⚠️ {msg}")
             except Exception as e:
                 st.error(f"Failed to load database: {e}")
 
