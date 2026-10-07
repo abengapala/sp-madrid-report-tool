@@ -11,6 +11,8 @@ UPDATED (this revision):
   ones actually checked. This matches the confirmed process: staleness
   has no hard cutoff, so it's a judgment call surfaced for review, never
   applied silently.
+- FIXED: text_area calls now have real labels (hidden) instead of "",
+  and use_container_width was replaced with width="stretch".
 """
 from __future__ import annotations
 
@@ -67,7 +69,7 @@ def render_diff_preview():
             f"These accounts will have their STATUS REMARKS unchanged from cutoff onward."
         )
         zero_rows = [{"PN": pn, "NAME": pn_to_name.get(pn, "")} for pn in zero_pns]
-        st.dataframe(pd.DataFrame(zero_rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(zero_rows), width="stretch", hide_index=True)
         st.markdown("---")
 
     # ---- Stale FV REMARKS — needs an explicit per-account decision ----
@@ -161,9 +163,23 @@ def _render_remarks_diff(original_df, updated_df, col: str, zero_pns: list,
         with st.expander(f"{icon} {label}", expanded=False):
             c1, c2 = st.columns(2)
             c1.markdown("**BEFORE**")
-            c1.text_area("", value=orig_lookup.get(pn, ""), height=150, disabled=True, key=f"b_{col}_{pn}")
+            c1.text_area(
+                "Before",
+                value=orig_lookup.get(pn, ""),
+                height=150,
+                disabled=True,
+                key=f"b_{col}_{pn}",
+                label_visibility="collapsed",
+            )
             c2.markdown("**AFTER**")
-            c2.text_area("", value=upd_lookup.get(pn, ""), height=150, disabled=True, key=f"a_{col}_{pn}")
+            c2.text_area(
+                "After",
+                value=upd_lookup.get(pn, ""),
+                height=150,
+                disabled=True,
+                key=f"a_{col}_{pn}",
+                label_visibility="collapsed",
+            )
 
     if unchanged:
         with st.expander(f"Show {len(unchanged)} unchanged accounts", expanded=False):
@@ -199,12 +215,12 @@ def _render_trails_preview(daily_df, drr_df, report_date):
             f"— REMARKS and ACTION CODE will be blank in Trails Upload."
         )
         rows = [{"PN": p, "NAME": name_lookup.get(p, "")} for p in blanked_pns]
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
     st.markdown(f"**Trails Upload preview** — {len(trails_df)} rows")
     display_cols = ["APPLICATION ID", "ACTION DATE", "ACTION CODE", "REMARKS", "NEXT ACTION DATE"]
     st.dataframe(
         trails_df[[c for c in display_cols if c in trails_df.columns]],
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
