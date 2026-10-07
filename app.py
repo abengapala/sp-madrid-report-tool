@@ -87,6 +87,18 @@ if st.session_state.get("db_manager_df") is None:
         st.session_state["db_manager_df"] = _df
 
 # ---------------------------------------------------------------------------
+# Cross-page navigation (set by buttons in other UI files)
+# Must run BEFORE the sidebar radio is created.
+# ---------------------------------------------------------------------------
+_goto = st.session_state.pop("_goto_mode", None)
+if _goto == "woff":
+    st.session_state["mode_radio"] = "\U0001f7e5  Write-Off Report"
+    st.session_state["mode"] = "woff"
+elif _goto == "recovery":
+    st.session_state["mode_radio"] = "\U0001f7e6  Recovery Report"
+    st.session_state["mode"] = "recovery"
+
+# ---------------------------------------------------------------------------
 # Sidebar
 # ---------------------------------------------------------------------------
 RECOVERY_STEPS = [
