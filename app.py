@@ -144,10 +144,12 @@ with st.sidebar:
             st.markdown(f'<span class="{cls}">{step_label}</span>', unsafe_allow_html=True)
 
         st.markdown("---")
-        rd = st.session_state.get("report_date")
-        if rd:
+             rd = st.session_state.get("report_date")
+        if rd is not None:
             st.markdown(f"**Report Date**\n\n{rd.strftime('%B %d, %Y')}")
-        daily = st.session_state.get("daily_df") or st.session_state.get("report_sheets", {}).get("DAILY")
+        daily = st.session_state.get("daily_df")
+        if daily is None:
+            daily = st.session_state.get("report_sheets", {}).get("DAILY")
         if daily is not None:
             st.markdown(f"**Accounts**: {len(daily)}")
 
