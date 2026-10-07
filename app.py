@@ -144,7 +144,7 @@ with st.sidebar:
             st.markdown(f'<span class="{cls}">{step_label}</span>', unsafe_allow_html=True)
 
         st.markdown("---")
-             rd = st.session_state.get("report_date")
+        rd = st.session_state.get("report_date")
         if rd is not None:
             st.markdown(f"**Report Date**\n\n{rd.strftime('%B %d, %Y')}")
         daily = st.session_state.get("daily_df")
@@ -168,7 +168,7 @@ with st.sidebar:
 
         st.markdown("---")
         rd = st.session_state.get("woff_report_date")
-        if rd:
+        if rd is not None:
             st.markdown(f"**Report Date**\n\n{rd.strftime('%B %d, %Y')}")
         woff_df = st.session_state.get("woff_df_loaded")
         if woff_df is not None:
