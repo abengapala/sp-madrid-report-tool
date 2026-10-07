@@ -11,6 +11,10 @@ UPDATED (this revision):
 - Summary now reports PTP additions from `ptp_added_count` /
   `ptp_new_rows_df` rather than diffing ptp_df against original_ptp
   (that diff doesn't exist anymore since we don't build a merged ptp_df).
+- FIXED: Write-Off button used a broken UTF-16 surrogate emoji
+  ("\\ud83d\\udccb") which crashed with UnicodeEncodeError. It now uses
+  "\\U0001f4cb" and switches mode through the `_goto_mode` flag that
+  app.py reads before drawing the sidebar radio.
 """
 from __future__ import annotations
 
@@ -51,8 +55,13 @@ def render_generate():
             st.session_state["rec_step"] = 4
             st.rerun()
     with col_woff:
-        if st.button("\ud83d\udccb Write-Off Report \u2192", key="go_woff", help="Go to Step 6 to update the Write-Off Status Report"):
-            st.session_state["step"] = 6
+        if st.button(
+            "\U0001f4cb Write-Off Report \u2192",
+            key="go_woff_generate",
+            help="Go to the Write-Off Status Report",
+        ):
+            st.session_state["_goto_mode"] = "woff"
+            st.session_state["woff_step"] = 1
             st.rerun()
 
 
